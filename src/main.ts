@@ -66,6 +66,15 @@ if (embedded) {
     globe.viewFromSurface(-89.54, 0, 'sun')
   })
   action('🎥 Seguir descenso', () => globe.setFollowTrajectory(true))
+  action('🚀 Módulo de aterrizaje + descenso', () => {
+    const s = MOCK_SITES[0]
+    globe.selectSite(s)
+    globe.setTrajectory(generateDescentArc(s.lat, s.lon))
+    void globe.setVehicles({ lander: true })
+  })
+  action('🧑‍🚀 Astronauta en Shackleton', () => {
+    void globe.setVehicles({ astronaut: { lat: MOCK_SITES[0].lat, lon: MOCK_SITES[0].lon } }).then(() => globe.viewVehicle('astronaut'))
+  })
   const reset = document.createElement('button')
   reset.textContent = '↺ Vista global'
   reset.onclick = () => globe.reset()

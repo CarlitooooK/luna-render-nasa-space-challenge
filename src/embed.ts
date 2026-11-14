@@ -50,6 +50,12 @@ export function connectToHost(globe: LunarGlobe, allowedOrigins: string[]): () =
       case 'SET_VIEW':
         globe.setView(msg.payload)
         break
+      case 'SET_VEHICLES':
+        void globe.setVehicles(msg.payload)
+        break
+      case 'VIEW_VEHICLE':
+        globe.viewVehicle(msg.payload.which, msg.payload.rangeM)
+        break
       case 'FOLLOW_TRAJECTORY':
         globe.setFollowTrajectory(msg.payload.enabled)
         break

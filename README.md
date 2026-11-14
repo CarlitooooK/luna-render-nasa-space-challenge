@@ -25,6 +25,7 @@ Host → globo:
 - `SET_SUN_LOCAL {lat,lon,vector}` y `SET_EARTH_LOCAL {lat,lon,vector}`: aceptan `sun_vector_3d` / `earth_vector_3d` tal cual (convención D-008). Dibujan el Sol y la Tierra y encienden la iluminación solar.
 - `SET_PSR` (`psrs` de `GET /psr/nearby`, tal cual): polígonos sobre la superficie. La conversión polar→lat/lon usa el CRS de LOLA (D-012 del handoff).
 - `SET_TRAJECTORY`, `PLAY_ANIMATION`, `FOLLOW_TRAJECTORY {enabled}` (cámara que sigue al módulo).
+- `SET_VEHICLES {lander?: boolean, astronaut?: {lat,lon,headingDeg?} | null}` y `VIEW_VEHICLE {which: 'lander'|'astronaut', rangeM?}` (fase 3, ver abajo).
 - `LOOK_AT {body: 'sun'|'earth'}`, `VIEW_FROM_SURFACE {lat,lon,look?}` (cámara a 2 m del suelo real) y `SET_VIEW {lat,lon,altM,headingDeg?,pitchDeg?}`.
 - `SET_CONFIG` (rejilla, capas, `terrain`, `terrainExaggeration`, `showStars`, `showSun`, `showEarth`, `autoRotate`…).
 
@@ -43,6 +44,15 @@ Requiere servir `public/cesium` y definir `CESIUM_BASE_URL` (ver `vite.config.ts
 - **Polo (`polarFix`, por defecto activo):** `src/polar.ts` reproyecta el mosaico polar sur (`LRO_WAC_Mosaic_SPole60_100m_v02`, estereográfico) bajo -83° con mezcla hasta -85°, y recorta la capa LOLA bajo -85°. **Reduce el abanico alrededor del polo a la mitad, no lo elimina** (es un hueco de datos del mosaico), y el mosaico polar tiene otra iluminación que el global, por lo que se notan costuras tenues.
 - Depuración: `?terrain=0` y `?polarfix=0` en la URL de la demo.
 
+## Vehículos (fase 3)
+- **Módulo de aterrizaje:** sigue la trayectoria enviada con `SET_TRAJECTORY`, con columna de motor (partículas) mientras desciende y 3 s posado antes de repetir. Se activa con `SET_VEHICLES {lander: true}`. Si no hay trayectoria, no se dibuja.
+- **Astronauta:** de pie sobre el terreno en el punto indicado; solo se dibuja a menos de 4 km. `SET_VEHICLES {astronaut: {lat, lon}}`, y `null` lo quita.
+- **Cámara:** `VIEW_VEHICLE` sigue al módulo a distancia fija (cinemático) o encuadra al astronauta (orbitable). `FOLLOW_TRAJECTORY` usa una distancia que baja con la altitud.
+- **Modelos:** NASA 3D Resources, sin modificar, 1,4 MB en total (`public/models/`, ver `ATTRIBUTION.md`). **El módulo es el Apollo LM, un sustituto genérico; no es el de Artemis.** No se incluye el SLS: NASA solo lo publica como archivos `.7z` de 14 a 70 MB.
+- **Velocidad ilustrativa:** el descenso se ralentiza con la altitud (unos 19 m/s al tocar) para que el tramo final se aprecie. **No es física real**: la trayectoria es la que envía el host y el contrato no tiene endpoint de trayectoria.
+- **Reloj:** el visor mantiene el reloj de Cesium en marcha porque las partículas lo necesitan.
+- Los modelos se descargan solo cuando se activan.
+
 ## Cielo (fase 2)
 - **Estrellas:** cielo Tycho2 de Cesium (no se crea solo con elipsoide lunar; se configura en `src/sky.ts`).
 - **Tierra:** esfera a tamaño angular real (≈1.9°, 3.5× el Sol) a la distancia media de 384 400 km, con textura Natural Earth local y fase según el Sol. **Sin datos del host se dibuja en la posición media (lon 0°, lat 0°); la libración (±7°) y la rotación/orientación de la Tierra no se modelan.**
@@ -56,7 +66,8 @@ Requiere servir `public/cesium` y definir `CESIUM_BASE_URL` (ver `vite.config.ts
 ## Limitaciones conocidas
 - **Polo:** ver arriba; mejora parcial. Queda un abanico residual de ~10 km alrededor del polo.
 - **Horizonte sin terreno:** vista desde superficie con horizonte esférico; el horizonte real (`horizon_profile`) vive en la consola.
-- **Suelo borroso a ras de superficie:** la imagen tiene ~100 m/px.
+- **Suelo borroso a ras de superficie:** la imagen tiene ~100 m/px. Una textura procedural de regolito para la fase 3 queda pendiente.
+- **Astronauta estático** (sin animación) y de baja calidad a propósito.
 - **Relieve de ~666 m/px y pasos de ~77 m:** suficiente para el contexto global y las vistas oblicuas, no para el detalle del sitio. Para el polo sur el backend tiene LOLA a 80 m/px (`LDEM_80S_80MPP_ADJ`); servirlo como teselas de terreno mejoraría mucho el resultado (pregunta `P-008` del handoff). El detalle local lo da el visor de la consola (`/terrain/patch`).
 - **Polo:** en proyección geográfica la imagen converge en abanico justo en ±90°. Si molesta, usar teselas polares estereográficas de Moon Trek.
 - Resolución máxima ~100 m/px (WAC). LROC NAC (0.5 m/px) es v2 según `docs/08` del handoff.

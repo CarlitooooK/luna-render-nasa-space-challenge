@@ -71,6 +71,9 @@ export type GlobeInboundMessage =
   | { type: 'LOOK_AT'; payload: { body: SkyBody } }
   | { type: 'VIEW_FROM_SURFACE'; payload: { lat: number; lon: number; look?: SkyBody } }
   | { type: 'SET_VIEW'; payload: { lat: number; lon: number; altM: number; headingDeg?: number; pitchDeg?: number } }
+  /** Fase 3: módulo con columna de motor siguiendo la trayectoria y/o astronauta en el suelo (`null` lo quita). */
+  | { type: 'SET_VEHICLES'; payload: { lander?: boolean; astronaut?: { lat: number; lon: number; headingDeg?: number } | null } }
+  | { type: 'VIEW_VEHICLE'; payload: { which: 'lander' | 'astronaut'; rangeM?: number } }
   | { type: 'FOLLOW_TRAJECTORY'; payload: { enabled: boolean } }
   | { type: 'PLAY_ANIMATION'; payload: { playing: boolean } }
   | { type: 'RESET' }

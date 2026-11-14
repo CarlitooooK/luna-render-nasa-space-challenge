@@ -32,6 +32,7 @@ import { CelestialSky, FAR_PLANE_M, createSkyBox } from './sky'
 import { polarSouthToLatLon } from './geo'
 import { createMoonTerrain, groundHeight, groundHeights } from './terrain'
 import { PolarSouthImageryProvider } from './polar'
+import { Vehicles } from './vehicles'
 import { LAYER_DEFS, createImageryProvider, type LayerMap } from './layers'
 import type {
   LandingSite,
@@ -99,6 +100,12 @@ export class LunarGlobe {
   private moonTerrain = createMoonTerrain()
   private flatTerrain = new EllipsoidTerrainProvider({ ellipsoid: MOON })
   private polarLayer: ImageryLayer | null = null
+  private vehicles!: Vehicles
+  private landedHold = 0 // segundos que el módulo se queda posado antes de repetir
+  private camLocked = false
+  private followRange: number | null = null // null = distancia automática según la altitud
+  private followHeadingDeg = 0
+  private maxAltKm = 0
   private psrEntities: Entity[] = []
   private trajectoryData: TrajectoryPoint[] = []
   private follow = false
@@ -138,7 +145,10 @@ export class LunarGlobe {
     // El Sol está a 9e8 m en el modelo: hay que ampliar el plano lejano de la cámara
     ;(scene.camera.frustum as { far: number }).far = FAR_PLANE_M
     if (scene.skyBox) scene.skyBox.show = this.config.showStars
+    // Las partículas (columna de motor) avanzan con el reloj de Cesium: debe correr
+    this.viewer.clock.shouldAnimate = true
     this.sky = new CelestialSky(this.viewer)
+    this.vehicles = new Vehicles(this.viewer)
     this.sky.setVisible(this.config.showSun, this.config.showEarth)
     scene.globe.tileLoadProgressEvent.addEventListener((pending: number) => this.emit('loading', { pending }))
 
@@ -205,6 +215,7 @@ export class LunarGlobe {
 
   /** Vuela hasta el sitio (por id o por coordenadas) y lo resalta. */
   selectSite(target: { id?: string; lat: number; lon: number }) {
+    this.stopFollow()
     this.selectedId = target.id ?? null
     this.selectedPoint = { lat: target.lat, lon: target.lon }
     this.refreshSites()
@@ -242,6 +253,7 @@ export class LunarGlobe {
   setTrajectory(points: TrajectoryPoint[]) {
     this.stopFollow()
     this.trajectoryData = points
+    this.maxAltKm = points.reduce((m, p) => Math.max(m, p.altKm ?? 0), 0)
     this.progress = 0
     this.buildTrajectory(points.map(() => 0))
     // La altitud es sobre la superficie: se suma la altura real del terreno cuando se conoce
@@ -368,6 +380,8 @@ export class LunarGlobe {
   /** Cámara que sigue al módulo durante el descenso. */
   setFollowTrajectory(enabled: boolean) {
     if (enabled && this.trajectoryPoints.length > 1) {
+      this.followRange = null
+      this.followHeadingDeg = 0
       this.follow = true
       this.flying = false
       this.viewer.camera.cancelFlight()
@@ -377,9 +391,47 @@ export class LunarGlobe {
   }
 
   private stopFollow() {
-    if (!this.follow) return
+    if (!this.follow && !this.camLocked) return
     this.follow = false
+    this.camLocked = false
     this.viewer.camera.lookAtTransform(Matrix4.IDENTITY)
+  }
+
+  /**
+   * Fase 3. `lander`: módulo de aterrizaje que recorre la trayectoria con columna de motor.
+   * `astronaut`: astronauta de pie en el suelo de ese punto (null lo quita). Ambos son opcionales.
+   */
+  async setVehicles(v: { lander?: boolean; astronaut?: { lat: number; lon: number; headingDeg?: number } | null }) {
+    if (v.lander !== undefined) {
+      this.vehicles.setLander(v.lander, () => (this.trajectoryPoints.length > 1 ? this.pointAlong(this.progress) : null))
+    }
+    if (v.astronaut !== undefined) {
+      const ground = v.astronaut && this.config.terrain ? await groundHeight(this.moonTerrain, v.astronaut.lat, v.astronaut.lon) : 0
+      if (!this.disposed) this.vehicles.setAstronaut(v.astronaut, ground)
+    }
+  }
+
+  /** Acerca la cámara a un vehículo (orbitable con el ratón). Se libera con `reset()` o cualquier otra vista. */
+  viewVehicle(which: 'lander' | 'astronaut', rangeM?: number) {
+    if (which === 'lander') {
+      // el módulo se mueve: la cámara lo sigue a distancia fija
+      if (this.trajectoryPoints.length < 2) return
+      this.stopFollow()
+      this.followRange = rangeM ?? 40
+      this.followHeadingDeg = 200
+      this.selectedPoint = this.selectedPoint ?? { lat: 0, lon: 0 }
+      this.flying = false
+      this.viewer.camera.cancelFlight()
+      this.follow = true
+      return
+    }
+    const target = this.vehicles.astronautPos
+    if (!target) return
+    this.stopFollow()
+    this.flying = false
+    this.selectedPoint = this.selectedPoint ?? { lat: 0, lon: 0 } // detiene la auto-rotación
+    this.camLocked = true
+    this.viewer.camera.lookAt(target, new HeadingPitchRange(CesiumMath.toRadians(200), CesiumMath.toRadians(-12), rangeM ?? 7))
   }
 
   /** Vuelve a la vista global. */
@@ -583,6 +635,7 @@ export class LunarGlobe {
 
   private interpolateData(t: number) {
     const pts = this.trajectoryData
+    if (pts.length < 2) return { lat: 0, lon: 0, altKm: 0 }
     const f = Math.min(Math.max(t, 0), 1) * (pts.length - 1)
     const i = Math.min(Math.floor(f), pts.length - 2)
     const a = pts[i]
@@ -601,16 +654,38 @@ export class LunarGlobe {
     this.lastTime = now
 
     if (this.playing && this.trajectoryPoints.length > 1 && this.config.showTrajectory) {
-      const next = this.progress + dt * 0.12
-      if (next >= 1) this.emit('animationComplete', undefined)
-      this.progress = next % 1
+      if (this.landedHold > 0) {
+        // posado: espera un momento y vuelve a empezar
+        this.landedHold -= dt
+        if (this.landedHold <= 0) this.progress = 0
+      } else {
+        // Velocidad ilustrativa: baja con la altitud (de ~100 % por encima del 15 % de la altitud máxima
+        // a ~0.1 % al posarse) para que el tramo final, donde está la acción, dure unos segundos.
+        const altNow = this.interpolateData(this.progress).altKm
+        const f = this.maxAltKm > 0 ? Math.min(1, Math.max(0.0008, altNow / (0.15 * this.maxAltKm))) : 1
+        const next = this.progress + dt * 0.12 * f
+        if (next >= 1) {
+          this.progress = 1
+          this.landedHold = 3
+          this.emit('animationComplete', undefined)
+        } else {
+          this.progress = next
+        }
+      }
     }
+
+    const hasPath = this.trajectoryPoints.length > 1 && this.config.showTrajectory
+    const landerPos = hasPath ? this.pointAlong(this.progress) : null
+    this.vehicles.update(landerPos, hasPath && this.progress < 1 && this.playing && this.interpolateData(this.progress).altKm > 0)
 
     if (this.trajectoryPoints.length > 1 && this.config.showTrajectory) {
       if (this.follow) {
+        // la distancia baja con la altitud: de 25 km en órbita a ~40 m al posarse
+        const altM = this.interpolateData(this.progress).altKm * 1000
+        const range = this.followRange ?? Math.max(40, Math.min(25_000, altM * 0.8 + 40))
         this.viewer.camera.lookAt(
           this.pointAlong(this.progress),
-          new HeadingPitchRange(0, CesiumMath.toRadians(-35), 25_000),
+          new HeadingPitchRange(CesiumMath.toRadians(this.followHeadingDeg), CesiumMath.toRadians(this.followRange ? -12 : -35), range),
         )
       }
       if (now - this.lastProgressEmit > 100) {
