@@ -54,6 +54,7 @@ export interface LunarGlobeEvents {
   globeClick: { lat: number; lon: number }
   animationComplete: undefined
   scenePhase: { phase: ScenePhase }
+  sceneError: { reason: string } // las opciones de PLAY_LANDING_SCENE se rechazaron
   sceneTelemetry: { t: number; altM: number; vMps: number } // ilustrativa, no es física
   loading: { pending: number } // teselas en descarga; 0 = imagen estable
   trajectoryProgress: { progress: number; lat: number; lon: number; altKm: number }
@@ -90,6 +91,7 @@ export type GlobeOutboundMessage =
   | { type: 'SITE_CLICKED'; payload: LandingSite }
   | { type: 'GLOBE_CLICKED'; payload: { lat: number; lon: number } }
   | { type: 'ANIMATION_COMPLETE' }
+  | { type: 'SCENE_ERROR'; payload: { reason: string } }
   | { type: 'SCENE_PHASE'; payload: { phase: ScenePhase } }
   | { type: 'SCENE_TELEMETRY'; payload: { t: number; altM: number; vMps: number } }
   | { type: 'LOADING'; payload: { pending: number } }

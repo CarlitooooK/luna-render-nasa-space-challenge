@@ -28,6 +28,33 @@ export interface LandingSceneOptions {
   astronaut?: boolean
 }
 
+/** Límites aceptados. Fuera de rango se recorta; lo no numérico se ignora y se usa el valor por defecto. */
+export const SCENE_LIMITS = {
+  startAltM: { min: 20, max: 5000, def: 600 },
+  durationS: { min: 3, max: 120, def: 14 },
+  distanceM: { min: 30, max: 2000, def: 120 },
+} as const
+
+const finite = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v)
+const clamp = (v: unknown, k: { min: number; max: number; def: number }) => (finite(v) ? Math.min(k.max, Math.max(k.min, v)) : k.def)
+
+/** Valida las opciones que llegan del host. Devuelve las opciones limpias o el motivo del rechazo. */
+export function sanitizeSceneOptions(o: unknown): LandingSceneOptions | string {
+  if (typeof o !== 'object' || o === null) return 'opciones ausentes'
+  const r = o as Record<string, unknown>
+  if (!finite(r.lat) || r.lat < -90 || r.lat > 90) return 'lat debe ser un número entre -90 y 90'
+  if (!finite(r.lon) || r.lon < -180 || r.lon > 360) return 'lon debe ser un número entre -180 y 360'
+  return {
+    lat: r.lat,
+    lon: r.lon,
+    headingDeg: finite(r.headingDeg) ? ((r.headingDeg % 360) + 360) % 360 : undefined,
+    startAltM: clamp(r.startAltM, SCENE_LIMITS.startAltM),
+    durationS: clamp(r.durationS, SCENE_LIMITS.durationS),
+    distanceM: clamp(r.distanceM, SCENE_LIMITS.distanceM),
+    astronaut: r.astronaut === false ? false : true,
+  }
+}
+
 export interface SceneHost {
   viewer: Viewer
   vehicles: Vehicles
@@ -39,6 +66,8 @@ export interface SceneHost {
   lockCamera(): void
   /** Luz de escena para los modelos: vector hacia la luz en el marco fijo lunar (null restaura la luz normal). */
   setKeyLight(towardLight: Cartesian3 | null): void
+  /** Informa un rechazo de las opciones (el host lo reenvía al padre). */
+  error(reason: string): void
 }
 
 /**
@@ -67,6 +96,8 @@ export class LandingScene {
   private gliding = false
   private token = 0
   private ready = false // hay punto de contacto calculado
+  private east = Cartesian3.UNIT_X
+  private north = Cartesian3.UNIT_Y
 
   constructor(private host: SceneHost) {}
 
@@ -75,7 +106,13 @@ export class LandingScene {
     return Cartesian3.add(this.site0, Cartesian3.multiplyByScalar(this.up, this.altM + 0.1, new Cartesian3()), new Cartesian3())
   }
 
-  async play(o: LandingSceneOptions) {
+  async play(input: LandingSceneOptions) {
+    const clean = sanitizeSceneOptions(input)
+    if (typeof clean === 'string') {
+      this.host.error(clean)
+      return
+    }
+    const o = clean
     this.stop()
     const token = ++this.token
     this.opts = o
@@ -92,8 +129,8 @@ export class LandingScene {
 
     const ground = await this.host.groundHeight(o.lat, o.lon)
     if (token !== this.token) return
-    this.startAlt = o.startAltM ?? 600
-    this.duration = o.durationS ?? 14
+    this.startAlt = o.startAltM ?? SCENE_LIMITS.startAltM.def
+    this.duration = o.durationS ?? SCENE_LIMITS.durationS.def
     this.altM = this.startAlt
     this.vMps = 0
 
@@ -111,14 +148,9 @@ export class LandingScene {
     this.azimuth = o.headingDeg !== undefined ? CesiumMath.toRadians(o.headingDeg) : sunAz !== null ? sunAz + CesiumMath.toRadians(70) : 0
     // Con el Sol real (a pocos grados del horizonte) los modelos quedarían casi negros. Para que la escena se
     // entienda se ilumina el módulo desde el azimut del Sol pero con 30° de elevación. Es un recurso de cámara.
-    const keyAz = sunAz ?? this.azimuth + Math.PI / 2
-    const keyEl = CesiumMath.toRadians(30)
-    const key = Cartesian3.add(
-      Cartesian3.add(Cartesian3.multiplyByScalar(east, Math.sin(keyAz) * Math.cos(keyEl), new Cartesian3()), Cartesian3.multiplyByScalar(north, Math.cos(keyAz) * Math.cos(keyEl), new Cartesian3()), new Cartesian3()),
-      Cartesian3.multiplyByScalar(this.up, Math.sin(keyEl), new Cartesian3()),
-      new Cartesian3(),
-    )
-    this.host.setKeyLight(key)
+    this.east = east
+    this.north = north
+    this.refreshKeyLight()
     const dirH = Cartesian3.add(
       Cartesian3.multiplyByScalar(east, Math.sin(this.azimuth), new Cartesian3()),
       Cartesian3.multiplyByScalar(north, Math.cos(this.azimuth), new Cartesian3()),
@@ -143,6 +175,28 @@ export class LandingScene {
         if (token === this.token) this.beginDescent()
       },
     })
+  }
+
+  /**
+   * Recalcula la luz de los modelos con la dirección actual del Sol (el host la llama si el scrubber de la
+   * consola cambia el Sol en plena escena). Azimut del Sol, 30° de elevación. Sin Sol, a 90° de la cámara.
+   */
+  refreshKeyLight() {
+    if (!this.active || !this.ready) return
+    const sun = this.host.sunDirection()
+    const sunAz = sun ? Math.atan2(Cartesian3.dot(sun, this.east), Cartesian3.dot(sun, this.north)) : null
+    const keyAz = sunAz ?? this.azimuth + Math.PI / 2
+    const keyEl = CesiumMath.toRadians(30)
+    const key = Cartesian3.add(
+      Cartesian3.add(
+        Cartesian3.multiplyByScalar(this.east, Math.sin(keyAz) * Math.cos(keyEl), new Cartesian3()),
+        Cartesian3.multiplyByScalar(this.north, Math.cos(keyAz) * Math.cos(keyEl), new Cartesian3()),
+        new Cartesian3(),
+      ),
+      Cartesian3.multiplyByScalar(this.up, Math.sin(keyEl), new Cartesian3()),
+      new Cartesian3(),
+    )
+    this.host.setKeyLight(key)
   }
 
   stop() {

@@ -30,7 +30,7 @@ Host → globo:
 - `LOOK_AT {body: 'sun'|'earth'}`, `VIEW_FROM_SURFACE {lat,lon,look?}` (cámara a 2 m del suelo real) y `SET_VIEW {lat,lon,altM,headingDeg?,pitchDeg?}`.
 - `SET_CONFIG` (rejilla, capas, `terrain`, `terrainExaggeration`, `showStars`, `showSun`, `showEarth`, `autoRotate`…).
 
-Globo → host: `SCENE_PHASE {phase: 'arrival'|'descent'|'landed'|'done'}`, `SCENE_TELEMETRY {t,altM,vMps}` (ilustrativa), `READY`, `SITE_CLICKED`, `GLOBE_CLICKED`, `ANIMATION_COMPLETE`, `LOADING {pending}` (teselas en descarga; 0 = estable), `TRAJECTORY_PROGRESS {progress,lat,lon,altKm}` (≤10/s, para HUD).
+Globo → host: `SCENE_ERROR {reason}`, `SCENE_PHASE {phase: 'arrival'|'descent'|'landed'|'done'}`, `SCENE_TELEMETRY {t,altM,vMps}` (ilustrativa), `READY`, `SITE_CLICKED`, `GLOBE_CLICKED`, `ANIMATION_COMPLETE`, `LOADING {pending}` (teselas en descarga; 0 = estable), `TRAJECTORY_PROGRESS {progress,lat,lon,altKm}` (≤10/s, para HUD).
 
 ### Import directo
 ```ts
@@ -51,6 +51,21 @@ Requiere servir `public/cesium` y definir `CESIUM_BASE_URL` (ver `vite.config.ts
 2. **Descenso:** el módulo baja en vertical con su motor mientras la cámara lo sigue girando desde el suelo.
 3. **Posado:** apaga el motor y levanta polvo (balístico, casi horizontal).
 4. **Astronauta:** aparece junto al módulo y la cámara se acerca a los dos; queda orbitable.
+
+### Parámetros de `PLAY_LANDING_SCENE` (se validan; fuera de rango se recorta)
+| Campo | Obligatorio | Rango | Por defecto |
+| --- | --- | --- | --- |
+| `lat` | sí | −90 … 90 | — |
+| `lon` | sí | −180 … 360 (acepta el formato 0–360 de la API) | — |
+| `headingDeg` | no | cualquier número (se normaliza a 0–360), azimut hacia el que mira la cámara | Sol a 70° del eje; sin Sol, 0 |
+| `startAltM` | no | 20 … 5000 m | 600 |
+| `durationS` | no | 3 … 120 s | 14 |
+| `distanceM` | no | 30 … 2000 m (cámara al punto de contacto) | 120 |
+| `astronaut` | no | `false` lo omite | `true` |
+
+`lat` o `lon` ausentes o inválidos **no arrancan la escena** y el globo responde `SCENE_ERROR {reason}`. Ningún mensaje mal formado detiene el render: los de formato inválido se descartan (vectores que no sean 3 números, coordenadas fuera de rango, etc.).
+
+Si la consola cambia el Sol en plena escena (`SET_SUN_LOCAL`, por ejemplo al mover el scrubber), el disco solar y la luz de los modelos se reorientan; el suelo no se sombrea y la cámara no se mueve.
 
 Cómo usarla bien:
 - Antes, enviar `SET_SUN_LOCAL` y `SET_EARTH_LOCAL` con los vectores reales de `POST /evaluate` de ese sitio y momento: el cielo (Sol, Tierra) sale de ahí. Sin Sol no se dibuja.

@@ -176,6 +176,7 @@ export class LunarGlobe {
         this.siteEntities.forEach((e) => (e.show = true))
       },
       phase: (phase) => this.emit('scenePhase', { phase }),
+      error: (reason) => this.emit('sceneError', { reason }),
       lockCamera: () => (this.camLocked = true),
       setKeyLight: (v) => {
         const light = this.viewer.scene
@@ -581,6 +582,13 @@ export class LunarGlobe {
 
   private applyLighting() {
     const { scene } = this.viewer
+    // En plena escena la luz es la de la escena: el Sol solo reorienta su azimut y el suelo no se sombrea
+    if (this.scene?.active) {
+      this.sky.setSun(this.config.sunDirection ? new Cartesian3(...this.config.sunDirection) : null)
+      this.scene.refreshKeyLight()
+      scene.globe.enableLighting = false
+      return
+    }
     const dir = this.config.sunDirection
     const sunVec = dir ? new Cartesian3(dir[0], dir[1], dir[2]) : null
     this.sky.setSun(sunVec)
