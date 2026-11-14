@@ -54,8 +54,8 @@ if (embedded) {
     b.onclick = fn
     panel.appendChild(b)
   }
-  // Vectores de ejemplo de contracts/lunar-landing-api-contract.md (lat -89.66, lon 222.7). Solo demo.
-  const SAMPLE = { lat: -89.66, lon: 222.7, sun: [0.842, 0.031, 0.539], earth: [0.588, -0.036, -0.808] } as const
+  // Vectores reales de POST /evaluate (API en vivo, Shackleton Rim, 2026-12-01T00:00Z, paso 0). Solo demo.
+  const SAMPLE = { lat: -89.66, lon: 222.7, sun: [0.842, 0.029, -0.539], earth: [0.588, -0.033, 0.808] } as const
   action('☀ Sol de muestra + mirar al Sol', () => {
     globe.setSunFromLocal(SAMPLE.lat, SAMPLE.lon, [...SAMPLE.sun])
     globe.lookAtBody('sun')
