@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Lunar Globe Renderer — NASA Space Challenge</title>
+    <style>
+      html, body, #globe { margin: 0; width: 100%; height: 100%; background: #05070d; overflow: hidden; }
+      body { font-family: system-ui, sans-serif; }
+      #panel { position: absolute; top: 12px; left: 12px; z-index: 5; width: 230px; padding: 10px;
+        background: rgba(9,13,22,.85); color: #e2e8f0; border: 1px solid #1e293b; border-radius: 8px; font-size: 12px; }
+      #panel.hidden { display: none; }
+      #panel h1 { font-size: 13px; margin: 0 0 8px; }
+      #panel button { display: block; width: 100%; margin: 3px 0; padding: 5px 8px; text-align: left; cursor: pointer;
+        background: #0f172a; color: inherit; border: 1px solid #334155; border-radius: 4px; }
+      #panel button.active { border-color: #f59e0b; color: #f59e0b; }
+      #panel label { display: block; margin: 4px 0; }
+      #readout { margin-top: 8px; color: #94a3b8; min-height: 1.2em; }
+    </style>
+  </head>
+  <body>
+    <div id="globe"></div>
+    <div id="panel"></div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

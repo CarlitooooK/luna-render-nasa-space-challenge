@@ -1,0 +1,22 @@
+{
+  "name": "lunar-globe-renderer",
+  "private": true,
+  "version": "0.2.0",
+  "type": "module",
+  "description": "Globo lunar 3D (CesiumJS + teselas NASA Moon Trek/LRO) para incrustar en luna-landing-navigator-console vía iframe + postMessage o import directo.",
+  "scripts": {
+    "cesium:assets": "node scripts/copy-cesium-assets.mjs",
+    "dev": "npm run cesium:assets && vite",
+    "build": "npm run cesium:assets && tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "cesium": "^1.147.0"
+  },
+  "devDependencies": {
+    "@types/node": "^26.0.0",
+    "typescript": "~7.0.2",
+    "vite": "^8.3.6"
+  }
+}
