@@ -38,11 +38,33 @@ if (embedded) {
   toggle('Rejilla lat/lon', (v) => globe.setConfig({ showGrid: v }))
   toggle('Capa elevación LOLA', (v) => globe.setConfig({ layers: { lolaShade: v } }))
   toggle('Iluminación solar (mock)', (v) => globe.setSunDirection(v ? [1, 0.2, -0.3] : null))
+  toggle('Estrellas', (v) => globe.setConfig({ showStars: v }), true)
+  toggle('Sol y Tierra', (v) => globe.setConfig({ showSun: v, showEarth: v }), true)
   toggle('Auto-rotación', (v) => globe.setConfig({ autoRotate: v }), true)
+  const action = (label: string, fn: () => void) => {
+    const b = document.createElement('button')
+    b.textContent = label
+    b.onclick = fn
+    panel.appendChild(b)
+  }
+  // Vectores de ejemplo de contracts/lunar-landing-api-contract.md (lat -89.66, lon 222.7). Solo demo.
+  const SAMPLE = { lat: -89.66, lon: 222.7, sun: [0.842, 0.031, 0.539], earth: [0.588, -0.036, -0.808] } as const
+  action('☀ Sol de muestra + mirar al Sol', () => {
+    globe.setSunFromLocal(SAMPLE.lat, SAMPLE.lon, [...SAMPLE.sun])
+    globe.lookAtBody('sun')
+  })
+  action('🌍 Mirar a la Tierra (posición media)', () => globe.lookAtBody('earth'))
+  action('Vista desde superficie (Shackleton)', () => {
+    globe.setSunFromLocal(SAMPLE.lat, SAMPLE.lon, [...SAMPLE.sun])
+    globe.viewFromSurface(-89.54, 0, 'sun')
+  })
+  action('🎥 Seguir descenso', () => globe.setFollowTrajectory(true))
   const reset = document.createElement('button')
   reset.textContent = '↺ Vista global'
   reset.onclick = () => globe.reset()
-  panel.append(reset, readout)
+  const status = document.createElement('div')
+  status.style.cssText = 'color:#f59e0b;min-height:1.2em;margin-top:6px'
+  panel.append(reset, status, readout)
 
   const pick = (id: string) => {
     const s = MOCK_SITES.find((x) => x.id === id)!
@@ -51,6 +73,8 @@ if (embedded) {
     ;[...panel.querySelectorAll('button')].forEach((b) => b.classList.toggle('active', b.textContent === s.name))
   }
   globe.on('siteClick', (s) => pick(s.id))
+  globe.on('loading', ({ pending }) => (status.textContent = pending > 0 ? `Cargando imagen… (${pending})` : ''))
+  globe.on('trajectoryProgress', (p) => (readout.textContent = `Descenso ${(p.progress * 100).toFixed(0)}% · alt ${p.altKm.toFixed(1)} km`))
   globe.on('globeClick', ({ lat, lon }) => (readout.textContent = `lat ${lat.toFixed(3)}°, lon ${lon.toFixed(3)}°`))
 }
 

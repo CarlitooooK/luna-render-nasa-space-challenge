@@ -35,6 +35,21 @@ export function connectToHost(globe: LunarGlobe, allowedOrigins: string[]): () =
       case 'SET_SUN_LOCAL':
         globe.setSunFromLocal(msg.payload.lat, msg.payload.lon, msg.payload.vector)
         break
+      case 'SET_EARTH_LOCAL':
+        globe.setEarthFromLocal(msg.payload.lat, msg.payload.lon, msg.payload.vector)
+        break
+      case 'SET_PSR':
+        globe.setPsr(msg.payload)
+        break
+      case 'LOOK_AT':
+        globe.lookAtBody(msg.payload.body)
+        break
+      case 'VIEW_FROM_SURFACE':
+        globe.viewFromSurface(msg.payload.lat, msg.payload.lon, msg.payload.look)
+        break
+      case 'FOLLOW_TRAJECTORY':
+        globe.setFollowTrajectory(msg.payload.enabled)
+        break
       case 'PLAY_ANIMATION':
         globe.setPlaying(msg.payload.playing)
         break
@@ -46,6 +61,8 @@ export function connectToHost(globe: LunarGlobe, allowedOrigins: string[]): () =
 
   const offSite = globe.on('siteClick', (site) => send({ type: 'SITE_CLICKED', payload: site }))
   const offGlobe = globe.on('globeClick', (p) => send({ type: 'GLOBE_CLICKED', payload: p }))
+  const offLoad = globe.on('loading', (p) => send({ type: 'LOADING', payload: p }))
+  const offProg = globe.on('trajectoryProgress', (p) => send({ type: 'TRAJECTORY_PROGRESS', payload: p }))
   const offAnim = globe.on('animationComplete', () => send({ type: 'ANIMATION_COMPLETE' }))
   window.addEventListener('message', onMessage)
 
@@ -58,5 +75,7 @@ export function connectToHost(globe: LunarGlobe, allowedOrigins: string[]): () =
     offSite()
     offGlobe()
     offAnim()
+    offLoad()
+    offProg()
   }
 }

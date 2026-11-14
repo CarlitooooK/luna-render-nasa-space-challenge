@@ -20,8 +20,15 @@ npm run build
 ```
 Orígenes permitidos: `VITE_ALLOWED_ORIGINS` (lista separada por comas) o `?allowedOrigins=`. Por defecto `http://localhost:5173`. Los mensajes de otros orígenes se ignoran y nunca se responde a `'*'`.
 
-Host → globo: `SET_SITES` (`LandingSite[]`, mismos campos que `/sites`; `status` GO/CAUTION/NO-GO colorea el pin), `SELECT_SITE {id?,lat,lon}`, `SET_TRAJECTORY`, `SET_CONFIG`, `SET_SUN_LOCAL {lat,lon,vector}` (acepta `sun_vector_3d` tal cual, convención D-008), `PLAY_ANIMATION`, `RESET`.
-Globo → host: `READY`, `SITE_CLICKED`, `GLOBE_CLICKED`, `ANIMATION_COMPLETE`.
+Host → globo:
+- `SET_SITES` (`LandingSite[]`, mismos campos que `/sites`; `status` GO/CAUTION/NO-GO colorea el pin), `SELECT_SITE {id?,lat,lon}`, `RESET`.
+- `SET_SUN_LOCAL {lat,lon,vector}` y `SET_EARTH_LOCAL {lat,lon,vector}`: aceptan `sun_vector_3d` / `earth_vector_3d` tal cual (convención D-008). Dibujan el Sol y la Tierra y encienden la iluminación solar.
+- `SET_PSR` (`psrs` de `GET /psr/nearby`, tal cual): polígonos sobre la superficie.
+- `SET_TRAJECTORY`, `PLAY_ANIMATION`, `FOLLOW_TRAJECTORY {enabled}` (cámara que sigue al módulo).
+- `LOOK_AT {body: 'sun'|'earth'}` y `VIEW_FROM_SURFACE {lat,lon,look?}` (cámara a 2 m del suelo).
+- `SET_CONFIG` (rejilla, capas, `showStars`, `showSun`, `showEarth`, `autoRotate`…).
+
+Globo → host: `READY`, `SITE_CLICKED`, `GLOBE_CLICKED`, `ANIMATION_COMPLETE`, `LOADING {pending}` (teselas en descarga; 0 = estable), `TRAJECTORY_PROGRESS {progress,lat,lon,altKm}` (≤10/s, para HUD).
 
 ### Import directo
 ```ts
@@ -30,10 +37,20 @@ const globe = new LunarGlobe(el); globe.setSites(sites); globe.on('siteClick', s
 ```
 Requiere servir `public/cesium` y definir `CESIUM_BASE_URL` (ver `vite.config.ts`).
 
+## Cielo (fase 2)
+- **Estrellas:** cielo Tycho2 de Cesium (no se crea solo con elipsoide lunar; se configura en `src/sky.ts`).
+- **Tierra:** esfera a tamaño angular real (≈1.9°, 3.5× el Sol) a la distancia media de 384 400 km, con textura Natural Earth local y fase según el Sol. **Sin datos del host se dibuja en la posición media (lon 0°, lat 0°); la libración (±7°) y la rotación/orientación de la Tierra no se modelan.**
+- **Sol:** disco de 0.53° con halo. **Solo se dibuja si el host envía su dirección**; sin ella no hay Sol ni sombreado de la Luna (no se inventa una posición).
+- El globo **no calcula efemérides**: toda dirección viene de la API (D-002, D-006).
+- Distancias escaladas: el Sol real (1.5e11 m) queda fuera del plano lejano de Cesium; se coloca a 9e8 m con tamaño angular correcto.
+
 ## Capas
 `wac` (base, nivel 8) y `lolaShade` (elevación en color, nivel 5, opacidad configurable). Atribución NASA incluida vía créditos de Cesium ("Data attribution").
 
 ## Limitaciones conocidas
+- **Abanico en el polo:** existe la capa polar `LRO_WAC_Mosaic_SPole60_100m_v02` (`trek.nasa.gov/tiles/Moon/SP/…`), pero está en proyección estereográfica polar (metros, ±1 095 km) y Cesium no la acepta directo. Arreglarlo exige un `ImageryProvider` propio que reproyecte. Pendiente.
+- **Horizonte sin terreno:** vista desde superficie con horizonte esférico; el horizonte real (`horizon_profile`) vive en la consola.
+- **Suelo borroso a ras de superficie:** la imagen tiene ~100 m/px.
 - **Sin relieve geométrico:** la esfera es lisa; el relieve se percibe por la imagen y la capa LOLA. Para 3D real hace falta generar terreno quantized-mesh desde el DEM LOLA del polo sur. El detalle topográfico del sitio lo da el visor de la consola (`/terrain/patch`).
 - **Polo:** en proyección geográfica la imagen converge en abanico justo en ±90°. Si molesta, usar teselas polares estereográficas de Moon Trek.
 - Resolución máxima ~100 m/px (WAC). LROC NAC (0.5 m/px) es v2 según `docs/08` del handoff.

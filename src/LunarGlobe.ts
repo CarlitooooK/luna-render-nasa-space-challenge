@@ -16,6 +16,7 @@ import {
   LabelStyle,
   Math as CesiumMath,
   Matrix4,
+  PolygonHierarchy,
   PolylineGlowMaterialProperty,
   ScreenSpaceEventHandler,
   ScreenSpaceEventType,
@@ -24,12 +25,16 @@ import {
   Viewer,
 } from 'cesium'
 import { MOON } from './moon'
+import { CelestialSky, FAR_PLANE_M, createSkyBox } from './sky'
+import { polarSouthToLatLon } from './geo'
 import { LAYER_DEFS, createImageryProvider, type LayerMap } from './layers'
 import type {
   LandingSite,
   LayerId,
   LunarGlobeConfig,
   LunarGlobeEvents,
+  PsrItem,
+  SkyBody,
   TrajectoryPoint,
 } from './types'
 
@@ -39,6 +44,9 @@ const DEFAULTS: Required<Omit<LunarGlobeConfig, 'sunDirection'>> & Pick<LunarGlo
   gridStepDeg: 30,
   showSiteLabels: true,
   showTrajectory: true,
+  showStars: true,
+  showSun: true,
+  showEarth: true,
   layers: { wac: true, lolaShade: false },
   lolaOpacity: 0.5,
   sunDirection: null,
@@ -79,6 +87,11 @@ export class LunarGlobe {
   private listeners: { [K in keyof LunarGlobeEvents]?: Listener<K>[] } = {}
   private userInteracting = false
   private flying = false
+  private sky!: CelestialSky
+  private psrEntities: Entity[] = []
+  private trajectoryData: TrajectoryPoint[] = []
+  private follow = false
+  private lastProgressEmit = 0
   private disposed = false
 
   constructor(container: HTMLElement, config: LunarGlobeConfig = {}) {
@@ -98,6 +111,7 @@ export class LunarGlobe {
       selectionIndicator: false,
       scene3DOnly: true,
       skyAtmosphere: false,
+      skyBox: createSkyBox(),
       globe: new Globe(MOON),
     })
 
@@ -109,6 +123,12 @@ export class LunarGlobe {
     if (scene.sun) scene.sun.show = false // el Sol/Luna de Cesium son los de la Tierra
     if (scene.moon) scene.moon.show = false
     scene.backgroundColor = Color.fromCssColorString('#05070d')
+    // El Sol está a 9e8 m en el modelo: hay que ampliar el plano lejano de la cámara
+    ;(scene.camera.frustum as { far: number }).far = FAR_PLANE_M
+    if (scene.skyBox) scene.skyBox.show = this.config.showStars
+    this.sky = new CelestialSky(this.viewer)
+    this.sky.setVisible(this.config.showSun, this.config.showEarth)
+    scene.globe.tileLoadProgressEvent.addEventListener((pending: number) => this.emit('loading', { pending }))
 
     const ctrl = scene.screenSpaceCameraController
     ctrl.minimumZoomDistance = 1_000
@@ -155,6 +175,10 @@ export class LunarGlobe {
     this.applyLayers()
     if (partial.showGrid !== undefined || partial.gridStepDeg !== undefined) this.applyGrid()
     if (partial.sunDirection !== undefined) this.applyLighting()
+    if (partial.showStars !== undefined && this.viewer.scene.skyBox)
+      this.viewer.scene.skyBox.show = this.config.showStars
+    if (partial.showSun !== undefined || partial.showEarth !== undefined)
+      this.sky.setVisible(this.config.showSun, this.config.showEarth)
     if (partial.showSiteLabels !== undefined) this.refreshSites()
     if (partial.showTrajectory !== undefined) this.refreshTrajectory()
     this.viewer.scene.requestRender()
@@ -187,6 +211,8 @@ export class LunarGlobe {
   }
 
   setTrajectory(points: TrajectoryPoint[]) {
+    this.stopFollow()
+    this.trajectoryData = points
     this.trajectoryPoints = points.map((p) =>
       Cartesian3.fromDegrees(p.lon, p.lat, (p.altKm ?? 0) * 1000, MOON),
     )
@@ -208,17 +234,121 @@ export class LunarGlobe {
    * convirtiéndolo al marco fijo lunar con el ENU del sitio.
    */
   setSunFromLocal(lat: number, lon: number, v: [number, number, number]) {
+    const fixed = this.localToFixed(lat, lon, v)
+    this.setSunDirection([fixed.x, fixed.y, fixed.z])
+  }
+
+  /** Dirección hacia la Tierra en el marco fijo lunar, observada desde el centro (null = posición media, lon 0°/lat 0°). */
+  setEarthDirection(dir: [number, number, number] | null) {
+    this.sky.setEarth(dir ? new Cartesian3(dir[0], dir[1], dir[2]) : null)
+    this.applyLighting()
+  }
+
+  /** Aplica `earth_vector_3d` de la API (marco local del sitio, D-008). La distancia es la media (384 400 km). */
+  setEarthFromLocal(lat: number, lon: number, v: [number, number, number]) {
+    const site = Cartesian3.fromDegrees(lon, lat, 0, MOON)
+    this.sky.setEarth(this.localToFixed(lat, lon, v), site)
+    this.applyLighting()
+  }
+
+  /** Orienta la cámara hacia el Sol o la Tierra sin moverla. El Sol solo si su dirección es conocida. */
+  lookAtBody(body: SkyBody) {
+    const dir = this.sky.direction(body)
+    if (!dir) return
+    this.stopFollow()
+    this.orientCamera(this.viewer.camera.positionWC, dir)
+  }
+
+  /** Cámara en la superficie del sitio (2 m) mirando al astro indicado, o al horizonte norte si no se indica. */
+  viewFromSurface(lat: number, lon: number, look?: SkyBody) {
+    this.stopFollow()
+    const pos = Cartesian3.fromDegrees(lon, lat, 2, MOON)
+    const frame = Transforms.eastNorthUpToFixedFrame(pos)
+    const north = Matrix4.multiplyByPointAsVector(frame, Cartesian3.UNIT_Y, new Cartesian3())
+    const target = (look && this.sky.direction(look)) || north
+    this.orientCamera(pos, target)
+  }
+
+  private orientCamera(position: Cartesian3, direction: Cartesian3) {
+    const d = Cartesian3.normalize(direction, new Cartesian3())
+    // "arriba" = eje norte de la Luna proyectado perpendicular a la mirada
+    const k = Cartesian3.dot(Cartesian3.UNIT_Z, d)
+    let up = Cartesian3.subtract(Cartesian3.UNIT_Z, Cartesian3.multiplyByScalar(d, k, new Cartesian3()), new Cartesian3())
+    if (Cartesian3.magnitude(up) < 1e-6) up = Cartesian3.clone(Cartesian3.UNIT_X)
+    Cartesian3.normalize(up, up)
+    this.viewer.camera.setView({ destination: position, orientation: { direction: d, up } })
+  }
+
+  private localToFixed(lat: number, lon: number, v: [number, number, number]): Cartesian3 {
+    // D-008: +X Este, +Y Arriba, -Z Norte  →  ENU = (x, -z, y)
     const enu = new Cartesian3(v[0], -v[2], v[1])
     const frame = Transforms.eastNorthUpToFixedFrame(Cartesian3.fromDegrees(lon, lat, 0, MOON))
-    const fixed = Matrix4.multiplyByPointAsVector(frame, enu, new Cartesian3())
-    Cartesian3.normalize(fixed, fixed)
-    this.setSunDirection([fixed.x, fixed.y, fixed.z])
+    return Cartesian3.normalize(Matrix4.multiplyByPointAsVector(frame, enu, new Cartesian3()), new Cartesian3())
+  }
+
+  /** Dibuja los PSR de GET /psr/nearby (metros estereográficos polares sur) como polígonos sobre la superficie. */
+  setPsr(items: PsrItem[]) {
+    const { entities } = this.viewer
+    this.psrEntities.forEach((e) => entities.remove(e))
+    this.psrEntities = []
+    const ring = (pts: unknown): Cartesian3[] | null => {
+      if (!Array.isArray(pts) || pts.length < 3) return null
+      const flat: number[] = []
+      for (const p of pts) {
+        if (!Array.isArray(p) || typeof p[0] !== 'number' || typeof p[1] !== 'number') return null
+        const { lat, lon } = polarSouthToLatLon(p[0], p[1])
+        flat.push(lon, lat)
+      }
+      return Cartesian3.fromDegreesArray(flat, MOON)
+    }
+    for (const item of items) {
+      const g = item.geometry
+      const polys: unknown[] =
+        g.type === 'MultiPolygon' ? (g.coordinates as unknown[]) : g.type === 'Polygon' ? [g.coordinates] : []
+      for (const poly of polys) {
+        if (!Array.isArray(poly)) continue
+        const outer = ring(poly[0])
+        if (!outer) continue
+        const holes = poly.slice(1).map(ring).filter((r): r is Cartesian3[] => !!r)
+        this.psrEntities.push(
+          entities.add({
+            name: item.name ?? `PSR ${item.gid}`,
+            polygon: {
+              hierarchy: new PolygonHierarchy(outer, holes.map((h) => new PolygonHierarchy(h))),
+              height: 100,
+              material: Color.fromCssColorString('#3b82f6').withAlpha(0.35),
+              outline: true,
+              outlineColor: Color.fromCssColorString('#93c5fd'),
+            },
+          }),
+        )
+      }
+    }
+  }
+
+  /** Cámara que sigue al módulo durante el descenso. */
+  setFollowTrajectory(enabled: boolean) {
+    if (enabled && this.trajectoryPoints.length > 1) {
+      this.follow = true
+      this.flying = false
+      this.viewer.camera.cancelFlight()
+    } else {
+      this.stopFollow()
+    }
+  }
+
+  private stopFollow() {
+    if (!this.follow) return
+    this.follow = false
+    this.viewer.camera.lookAtTransform(Matrix4.IDENTITY)
   }
 
   /** Vuelve a la vista global. */
   reset() {
+    this.stopFollow()
     this.clearSelection()
     this.trajectoryPoints = []
+    this.trajectoryData = []
     this.refreshTrajectory()
     this.flying = true
     this.viewer.camera.flyTo({
@@ -287,15 +417,17 @@ export class LunarGlobe {
   private applyLighting() {
     const { scene } = this.viewer
     const dir = this.config.sunDirection
-    if (!dir) {
-      scene.globe.enableLighting = false
-      return
-    }
-    // DirectionalLight.direction es hacia donde viaja la luz: opuesto al vector hacia el Sol
-    const d = Cartesian3.negate(new Cartesian3(dir[0], dir[1], dir[2]), new Cartesian3())
-    Cartesian3.normalize(d, d)
-    scene.light = new DirectionalLight({ direction: d })
-    scene.globe.enableLighting = true
+    const sunVec = dir ? new Cartesian3(dir[0], dir[1], dir[2]) : null
+    this.sky.setSun(sunVec)
+    // DirectionalLight.direction es hacia donde viaja la luz: opuesto al vector hacia el Sol.
+    // Sin Sol conocido, se ilumina la Tierra como "llena" (Sol detrás del observador) y la Luna
+    // queda sin sombreado.
+    const travel = sunVec
+      ? Cartesian3.negate(sunVec, new Cartesian3())
+      : Cartesian3.clone(this.sky.direction('earth') ?? new Cartesian3(1, 0, 0))
+    Cartesian3.normalize(travel, travel)
+    scene.light = new DirectionalLight({ direction: travel })
+    scene.globe.enableLighting = !!sunVec
   }
 
   private pinColor(site: LandingSite): Color {
@@ -358,6 +490,25 @@ export class LunarGlobe {
         },
       }),
       entities.add({
+        position: Cartesian3.fromDegrees(
+          this.trajectoryData[this.trajectoryData.length - 1].lon,
+          this.trajectoryData[this.trajectoryData.length - 1].lat,
+          PIN_HEIGHT_M,
+          MOON,
+        ),
+        point: { pixelSize: 8, color: Color.WHITE, outlineColor: Color.fromCssColorString('#ff6b35'), outlineWidth: 3 },
+        label: {
+          text: 'Touchdown',
+          font: '11px system-ui, sans-serif',
+          style: LabelStyle.FILL_AND_OUTLINE,
+          outlineWidth: 3,
+          fillColor: Color.WHITE,
+          verticalOrigin: VerticalOrigin.TOP,
+          pixelOffset: new Cartesian2(0, 8),
+          distanceDisplayCondition: new DistanceDisplayCondition(0, 2_500_000),
+        },
+      }),
+      entities.add({
         position: new CallbackProperty(() => this.pointAlong(this.progress), false) as never,
         point: { pixelSize: 10, color: Color.fromCssColorString('#ff6b35'), outlineColor: Color.WHITE, outlineWidth: 2 },
       }),
@@ -372,6 +523,20 @@ export class LunarGlobe {
     return Cartesian3.lerp(pts[i], pts[i + 1], f - i, new Cartesian3())
   }
 
+  private interpolateData(t: number) {
+    const pts = this.trajectoryData
+    const f = Math.min(Math.max(t, 0), 1) * (pts.length - 1)
+    const i = Math.min(Math.floor(f), pts.length - 2)
+    const a = pts[i]
+    const b = pts[i + 1]
+    const u = f - i
+    return {
+      lat: a.lat + (b.lat - a.lat) * u,
+      lon: a.lon + (b.lon - a.lon) * u,
+      altKm: (a.altKm ?? 0) + ((b.altKm ?? 0) - (a.altKm ?? 0)) * u,
+    }
+  }
+
   private onPreRender = () => {
     const now = performance.now()
     const dt = Math.min((now - this.lastTime) / 1000, 0.1)
@@ -381,6 +546,19 @@ export class LunarGlobe {
       const next = this.progress + dt * 0.12
       if (next >= 1) this.emit('animationComplete', undefined)
       this.progress = next % 1
+    }
+
+    if (this.trajectoryPoints.length > 1 && this.config.showTrajectory) {
+      if (this.follow) {
+        this.viewer.camera.lookAt(
+          this.pointAlong(this.progress),
+          new HeadingPitchRange(0, CesiumMath.toRadians(-35), 25_000),
+        )
+      }
+      if (now - this.lastProgressEmit > 100) {
+        this.lastProgressEmit = now
+        this.emit('trajectoryProgress', { progress: this.progress, ...this.interpolateData(this.progress) })
+      }
     }
 
     const idle = !this.selectedId && !this.selectedPoint && !this.userInteracting
