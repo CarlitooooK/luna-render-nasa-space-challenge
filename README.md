@@ -25,11 +25,12 @@ Host → globo:
 - `SET_SUN_LOCAL {lat,lon,vector}` y `SET_EARTH_LOCAL {lat,lon,vector}`: aceptan `sun_vector_3d` / `earth_vector_3d` tal cual (convención D-008). Dibujan el Sol y la Tierra y encienden la iluminación solar.
 - `SET_PSR` (`psrs` de `GET /psr/nearby`, tal cual): polígonos sobre la superficie. La conversión polar→lat/lon usa el CRS de LOLA (D-012 del handoff).
 - `SET_TRAJECTORY`, `PLAY_ANIMATION`, `FOLLOW_TRAJECTORY {enabled}` (cámara que sigue al módulo).
+- `PLAY_LANDING_SCENE {lat,lon,headingDeg?,startAltM?,durationS?,distanceM?,astronaut?}` y `STOP_LANDING_SCENE`: la escena de alunizaje (ver abajo).
 - `SET_VEHICLES {lander?: boolean, astronaut?: {lat,lon,headingDeg?} | null}` y `VIEW_VEHICLE {which: 'lander'|'astronaut', rangeM?}` (fase 3, ver abajo).
 - `LOOK_AT {body: 'sun'|'earth'}`, `VIEW_FROM_SURFACE {lat,lon,look?}` (cámara a 2 m del suelo real) y `SET_VIEW {lat,lon,altM,headingDeg?,pitchDeg?}`.
 - `SET_CONFIG` (rejilla, capas, `terrain`, `terrainExaggeration`, `showStars`, `showSun`, `showEarth`, `autoRotate`…).
 
-Globo → host: `READY`, `SITE_CLICKED`, `GLOBE_CLICKED`, `ANIMATION_COMPLETE`, `LOADING {pending}` (teselas en descarga; 0 = estable), `TRAJECTORY_PROGRESS {progress,lat,lon,altKm}` (≤10/s, para HUD).
+Globo → host: `SCENE_PHASE {phase: 'arrival'|'descent'|'landed'|'done'}`, `SCENE_TELEMETRY {t,altM,vMps}` (ilustrativa), `READY`, `SITE_CLICKED`, `GLOBE_CLICKED`, `ANIMATION_COMPLETE`, `LOADING {pending}` (teselas en descarga; 0 = estable), `TRAJECTORY_PROGRESS {progress,lat,lon,altKm}` (≤10/s, para HUD).
 
 ### Import directo
 ```ts
@@ -43,6 +44,21 @@ Requiere servir `public/cesium` y definir `CESIUM_BASE_URL` (ver `vite.config.ts
 - **Sin sombreado por relieve:** el terreno de Cesium sin normales no recibe sombras de la luz solar; el relieve se percibe por la geometría, el horizonte y la iluminación horneada de la imagen.
 - **Polo (`polarFix`, por defecto activo):** `src/polar.ts` reproyecta el mosaico polar sur (`LRO_WAC_Mosaic_SPole60_100m_v02`, estereográfico) bajo -83° con mezcla hasta -85°, y recorta la capa LOLA bajo -85°. **Reduce el abanico alrededor del polo a la mitad, no lo elimina** (es un hueco de datos del mosaico), y el mosaico polar tiene otra iluminación que el global, por lo que se notan costuras tenues.
 - Depuración: `?terrain=0` y `?polarfix=0` en la URL de la demo.
+
+## Escena de alunizaje (fase 3)
+`PLAY_LANDING_SCENE` encadena todo en una sola secuencia, que arranca desde la vista 3D de la Luna:
+1. **Llegada:** la cámara vuela desde la vista actual hasta el suelo, a un punto de espectador a ~120 m del contacto, con horizonte y cielo.
+2. **Descenso:** el módulo baja en vertical con su motor mientras la cámara lo sigue girando desde el suelo.
+3. **Posado:** apaga el motor y levanta polvo (balístico, casi horizontal).
+4. **Astronauta:** aparece junto al módulo y la cámara se acerca a los dos; queda orbitable.
+
+Cómo usarla bien:
+- Antes, enviar `SET_SUN_LOCAL` y `SET_EARTH_LOCAL` con los vectores reales de `POST /evaluate` de ese sitio y momento: el cielo (Sol, Tierra) sale de ahí. Sin Sol no se dibuja.
+- La cámara mira con el Sol a ~70° del eje para que el módulo se vea de lado.
+- **Es una escena ilustrativa, no una simulación:** el descenso tiene desaceleración constante (de `startAltM`, 600 m por defecto, a 0 en `durationS`, 14 s por defecto); la velocidad que informa `SCENE_TELEMETRY` es de esa curva, no física. Rotularla como tal en la interfaz.
+- **Luz de escena:** con el Sol real a pocos grados del horizonte el módulo quedaría negro. Se le da una luz desde el azimut del Sol pero a 30° de elevación. Es un recurso de cámara; el disco solar y la dirección del Sol siguen siendo los reales.
+- El suelo usa la imagen real (~100 m/px) más una **textura procedural de regolito** (ilustrativa) que solo aparece a ras de suelo, y el relieve LOLA (~666 m/px). Se oculta la capa de pines durante la escena.
+- En la prueba con la API en vivo, la altura de Shackleton Rim fue 866 m en el terreno del globo contra 880 m de `GET /sites`.
 
 ## Vehículos (fase 3)
 - **Módulo de aterrizaje:** sigue la trayectoria enviada con `SET_TRAJECTORY`, con columna de motor (partículas) mientras desciende y 3 s posado antes de repetir. Se activa con `SET_VEHICLES {lander: true}`. Si no hay trayectoria, no se dibuja.
@@ -66,7 +82,7 @@ Requiere servir `public/cesium` y definir `CESIUM_BASE_URL` (ver `vite.config.ts
 ## Limitaciones conocidas
 - **Polo:** ver arriba; mejora parcial. Queda un abanico residual de ~10 km alrededor del polo.
 - **Horizonte sin terreno:** vista desde superficie con horizonte esférico; el horizonte real (`horizon_profile`) vive en la consola.
-- **Suelo borroso a ras de superficie:** la imagen tiene ~100 m/px. Una textura procedural de regolito para la fase 3 queda pendiente.
+- **Suelo a ras de superficie:** la imagen tiene ~100 m/px; la textura procedural lo disimula pero se ve suave y sin rocas ni cráteres pequeños. La escena es más convincente sobre terreno llano e iluminado (p. ej. IM-2 Mons Mouton).
 - **Astronauta estático** (sin animación) y de baja calidad a propósito.
 - **Relieve de ~666 m/px y pasos de ~77 m:** suficiente para el contexto global y las vistas oblicuas, no para el detalle del sitio. Para el polo sur el backend tiene LOLA a 80 m/px (`LDEM_80S_80MPP_ADJ`); servirlo como teselas de terreno mejoraría mucho el resultado (pregunta `P-008` del handoff). El detalle local lo da el visor de la consola (`/terrain/patch`).
 - **Polo:** en proyección geográfica la imagen converge en abanico justo en ±90°. Si molesta, usar teselas polares estereográficas de Moon Trek.

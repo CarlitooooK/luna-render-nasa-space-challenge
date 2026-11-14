@@ -47,10 +47,14 @@ export interface PsrItem {
 
 export type SkyBody = 'sun' | 'earth'
 
+export type ScenePhase = 'arrival' | 'descent' | 'landed' | 'done'
+
 export interface LunarGlobeEvents {
   siteClick: LandingSite
   globeClick: { lat: number; lon: number }
   animationComplete: undefined
+  scenePhase: { phase: ScenePhase }
+  sceneTelemetry: { t: number; altM: number; vMps: number } // ilustrativa, no es física
   loading: { pending: number } // teselas en descarga; 0 = imagen estable
   trajectoryProgress: { progress: number; lat: number; lon: number; altKm: number }
   ready: undefined
@@ -72,6 +76,9 @@ export type GlobeInboundMessage =
   | { type: 'VIEW_FROM_SURFACE'; payload: { lat: number; lon: number; look?: SkyBody } }
   | { type: 'SET_VIEW'; payload: { lat: number; lon: number; altM: number; headingDeg?: number; pitchDeg?: number } }
   /** Fase 3: módulo con columna de motor siguiendo la trayectoria y/o astronauta en el suelo (`null` lo quita). */
+  /** Escena de alunizaje en un plano horizontal sobre el terreno (vuelo desde la vista global, descenso, polvo y astronauta). */
+  | { type: 'PLAY_LANDING_SCENE'; payload: { lat: number; lon: number; headingDeg?: number; startAltM?: number; durationS?: number; distanceM?: number; astronaut?: boolean } }
+  | { type: 'STOP_LANDING_SCENE' }
   | { type: 'SET_VEHICLES'; payload: { lander?: boolean; astronaut?: { lat: number; lon: number; headingDeg?: number } | null } }
   | { type: 'VIEW_VEHICLE'; payload: { which: 'lander' | 'astronaut'; rangeM?: number } }
   | { type: 'FOLLOW_TRAJECTORY'; payload: { enabled: boolean } }
@@ -83,5 +90,7 @@ export type GlobeOutboundMessage =
   | { type: 'SITE_CLICKED'; payload: LandingSite }
   | { type: 'GLOBE_CLICKED'; payload: { lat: number; lon: number } }
   | { type: 'ANIMATION_COMPLETE' }
+  | { type: 'SCENE_PHASE'; payload: { phase: ScenePhase } }
+  | { type: 'SCENE_TELEMETRY'; payload: { t: number; altM: number; vMps: number } }
   | { type: 'LOADING'; payload: { pending: number } }
   | { type: 'TRAJECTORY_PROGRESS'; payload: { progress: number; lat: number; lon: number; altKm: number } }

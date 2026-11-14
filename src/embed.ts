@@ -50,6 +50,12 @@ export function connectToHost(globe: LunarGlobe, allowedOrigins: string[]): () =
       case 'SET_VIEW':
         globe.setView(msg.payload)
         break
+      case 'PLAY_LANDING_SCENE':
+        globe.playLandingScene(msg.payload)
+        break
+      case 'STOP_LANDING_SCENE':
+        globe.stopLandingScene()
+        break
       case 'SET_VEHICLES':
         void globe.setVehicles(msg.payload)
         break
@@ -72,6 +78,8 @@ export function connectToHost(globe: LunarGlobe, allowedOrigins: string[]): () =
   const offGlobe = globe.on('globeClick', (p) => send({ type: 'GLOBE_CLICKED', payload: p }))
   const offLoad = globe.on('loading', (p) => send({ type: 'LOADING', payload: p }))
   const offProg = globe.on('trajectoryProgress', (p) => send({ type: 'TRAJECTORY_PROGRESS', payload: p }))
+  const offPhase = globe.on('scenePhase', (p) => send({ type: 'SCENE_PHASE', payload: p }))
+  const offTele = globe.on('sceneTelemetry', (p) => send({ type: 'SCENE_TELEMETRY', payload: p }))
   const offAnim = globe.on('animationComplete', () => send({ type: 'ANIMATION_COMPLETE' }))
   window.addEventListener('message', onMessage)
 
@@ -84,6 +92,8 @@ export function connectToHost(globe: LunarGlobe, allowedOrigins: string[]): () =
     offSite()
     offGlobe()
     offAnim()
+    offPhase()
+    offTele()
     offLoad()
     offProg()
   }

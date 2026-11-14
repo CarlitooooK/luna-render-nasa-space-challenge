@@ -110,9 +110,12 @@ export function createMoonTerrain(): TerrainProvider {
   })
 }
 
+/** La API usa longitud este de 0° a 360°; Cesium solo entiende −180°…180° al muestrear terreno. */
+const wrapLon = (lon: number) => ((((lon + 180) % 360) + 360) % 360) - 180
+
 /** Altura del terreno (m sobre la esfera lunar) en un punto, o 0 si no se puede leer. */
 export async function groundHeight(provider: TerrainProvider, lat: number, lon: number): Promise<number> {
-  const c = Cartographic.fromDegrees(lon, lat)
+  const c = Cartographic.fromDegrees(wrapLon(lon), lat)
   try {
     const [r] = await sampleTerrain(provider, 8, [c])
     return r.height ?? 0
@@ -123,7 +126,7 @@ export async function groundHeight(provider: TerrainProvider, lat: number, lon: 
 
 /** Alturas de varios puntos a la vez. */
 export async function groundHeights(provider: TerrainProvider, pts: { lat: number; lon: number }[]): Promise<number[]> {
-  const cs = pts.map((p) => Cartographic.fromDegrees(p.lon, p.lat))
+  const cs = pts.map((p) => Cartographic.fromDegrees(wrapLon(p.lon), p.lat))
   try {
     const r = await sampleTerrain(provider, 8, cs)
     return r.map((c) => c.height ?? 0)

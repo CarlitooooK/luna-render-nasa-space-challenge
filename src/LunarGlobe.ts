@@ -14,7 +14,7 @@ import {
   Globe,
   HeadingPitchRange,
   HeightReference,
-  type ImageryLayer,
+  ImageryLayer,
   HorizontalOrigin,
   LabelStyle,
   Math as CesiumMath,
@@ -33,6 +33,8 @@ import { polarSouthToLatLon } from './geo'
 import { createMoonTerrain, groundHeight, groundHeights } from './terrain'
 import { PolarSouthImageryProvider } from './polar'
 import { Vehicles } from './vehicles'
+import { LandingScene, type LandingSceneOptions } from './landingScene'
+import { RegolithImageryProvider, REGOLITH_MIN_TERRAIN_LEVEL } from './regolith'
 import { LAYER_DEFS, createImageryProvider, type LayerMap } from './layers'
 import type {
   LandingSite,
@@ -101,6 +103,9 @@ export class LunarGlobe {
   private flatTerrain = new EllipsoidTerrainProvider({ ellipsoid: MOON })
   private polarLayer: ImageryLayer | null = null
   private vehicles!: Vehicles
+  private scene!: LandingScene
+  private detailLayer: ImageryLayer | null = null
+  private lastTelemetry = 0
   private landedHold = 0 // segundos que el módulo se queda posado antes de repetir
   private camLocked = false
   private followRange: number | null = null // null = distancia automática según la altitud
@@ -149,6 +154,39 @@ export class LunarGlobe {
     this.viewer.clock.shouldAnimate = true
     this.sky = new CelestialSky(this.viewer)
     this.vehicles = new Vehicles(this.viewer)
+    this.scene = new LandingScene({
+      viewer: this.viewer,
+      vehicles: this.vehicles,
+      groundHeight: (lat, lon) => (this.config.terrain ? groundHeight(this.moonTerrain, lat, lon) : Promise.resolve(0)),
+      sunDirection: () => this.sky.direction('sun'),
+      begin: () => {
+        this.stopFollow()
+        this.flying = false
+        this.selectedPoint = this.selectedPoint ?? { lat: 0, lon: 0 } // sin auto-rotación
+        this.viewer.camera.cancelFlight()
+        // a ras de suelo el sombreado de la esfera apagaría la imagen: se deja la imagen tal cual y
+        // la luz solar solo actúa sobre los modelos
+        this.viewer.scene.globe.enableLighting = false
+        // en la escena local no hay pines de sitios
+        this.siteEntities.forEach((e) => (e.show = false))
+      },
+      end: () => {
+        this.stopFollow()
+        this.applyLighting()
+        this.siteEntities.forEach((e) => (e.show = true))
+      },
+      phase: (phase) => this.emit('scenePhase', { phase }),
+      lockCamera: () => (this.camLocked = true),
+      setKeyLight: (v) => {
+        const light = this.viewer.scene
+        if (!v) {
+          this.applyLighting()
+          return
+        }
+        const travel = Cartesian3.negate(Cartesian3.normalize(v, new Cartesian3()), new Cartesian3())
+        light.light = new DirectionalLight({ direction: travel, intensity: 2.4 })
+      },
+    })
     this.sky.setVisible(this.config.showSun, this.config.showEarth)
     scene.globe.tileLoadProgressEvent.addEventListener((pending: number) => this.emit('loading', { pending }))
 
@@ -216,6 +254,7 @@ export class LunarGlobe {
   /** Vuela hasta el sitio (por id o por coordenadas) y lo resalta. */
   selectSite(target: { id?: string; lat: number; lon: number }) {
     this.stopFollow()
+    this.scene.stop()
     this.selectedId = target.id ?? null
     this.selectedPoint = { lat: target.lat, lon: target.lon }
     this.refreshSites()
@@ -232,6 +271,7 @@ export class LunarGlobe {
   /** Coloca la cámara de golpe sobre (lat, lon) a `altM` metros sobre la esfera; pitch -90 = mirando abajo. */
   setView(v: { lat: number; lon: number; altM: number; headingDeg?: number; pitchDeg?: number }) {
     this.stopFollow()
+    this.scene.stop()
     this.flying = false
     this.selectedPoint = { lat: v.lat, lon: v.lon } // detiene la auto-rotación
     this.viewer.camera.setView({
@@ -313,6 +353,7 @@ export class LunarGlobe {
   /** Cámara en la superficie del sitio (2 m) mirando al astro indicado, o al horizonte norte si no se indica. */
   async viewFromSurface(lat: number, lon: number, look?: SkyBody) {
     this.stopFollow()
+    this.scene.stop()
     const ground = this.config.terrain ? await groundHeight(this.moonTerrain, lat, lon) : 0
     if (this.disposed) return
     const pos = Cartesian3.fromDegrees(lon, lat, ground + 2, MOON)
@@ -379,6 +420,7 @@ export class LunarGlobe {
 
   /** Cámara que sigue al módulo durante el descenso. */
   setFollowTrajectory(enabled: boolean) {
+    this.scene.stop()
     if (enabled && this.trajectoryPoints.length > 1) {
       this.followRange = null
       this.followHeadingDeg = 0
@@ -401,6 +443,15 @@ export class LunarGlobe {
    * Fase 3. `lander`: módulo de aterrizaje que recorre la trayectoria con columna de motor.
    * `astronaut`: astronauta de pie en el suelo de ese punto (null lo quita). Ambos son opcionales.
    */
+  /** Escena de alunizaje: vuelo desde la vista global, descenso vertical del módulo, polvo y astronauta. */
+  playLandingScene(o: LandingSceneOptions) {
+    void this.scene.play(o)
+  }
+
+  stopLandingScene() {
+    this.scene.stop()
+  }
+
   async setVehicles(v: { lander?: boolean; astronaut?: { lat: number; lon: number; headingDeg?: number } | null }) {
     if (v.lander !== undefined) {
       this.vehicles.setLander(v.lander, () => (this.trajectoryPoints.length > 1 ? this.pointAlong(this.progress) : null))
@@ -413,6 +464,7 @@ export class LunarGlobe {
 
   /** Acerca la cámara a un vehículo (orbitable con el ratón). Se libera con `reset()` o cualquier otra vista. */
   viewVehicle(which: 'lander' | 'astronaut', rangeM?: number) {
+    this.scene.stop()
     if (which === 'lander') {
       // el módulo se mueve: la cámara lo sigue a distancia fija
       if (this.trajectoryPoints.length < 2) return
@@ -437,6 +489,7 @@ export class LunarGlobe {
   /** Vuelve a la vista global. */
   reset() {
     this.stopFollow()
+    this.scene.stop()
     this.clearSelection()
     this.trajectoryPoints = []
     this.trajectoryData = []
@@ -470,6 +523,10 @@ export class LunarGlobe {
         // WAC debajo, LOLA encima
         if (order === 0) {
           imageryLayers.lowerToBottom(layer)
+          if (!this.detailLayer) {
+            this.detailLayer = new ImageryLayer(new RegolithImageryProvider(), { minimumTerrainLevel: REGOLITH_MIN_TERRAIN_LEVEL })
+            imageryLayers.add(this.detailLayer, 1)
+          }
           if (this.config.polarFix && !this.polarLayer) {
             // mosaico polar reproyectado sobre el WAC global (abanico en ±90°)
             this.polarLayer = imageryLayers.addImageryProvider(new PolarSouthImageryProvider(), 1)
@@ -477,6 +534,7 @@ export class LunarGlobe {
         }
       }
       if (id === 'wac' && this.polarLayer) this.polarLayer.show = wanted
+      if (id === 'wac' && this.detailLayer) this.detailLayer.show = wanted
       if (layer) {
         layer.show = wanted
         if (id === 'lolaShade') layer.alpha = this.config.lolaOpacity
@@ -674,9 +732,20 @@ export class LunarGlobe {
       }
     }
 
+    this.scene.update(dt)
+    if (this.scene.active) {
+      if (now - this.lastTelemetry > 100 && this.scene.phase === 'descent') {
+        this.lastTelemetry = now
+        this.emit('sceneTelemetry', { t: this.scene.elapsedS, altM: this.scene.altM, vMps: this.scene.vMps })
+      }
+    }
     const hasPath = this.trajectoryPoints.length > 1 && this.config.showTrajectory
-    const landerPos = hasPath ? this.pointAlong(this.progress) : null
-    this.vehicles.update(landerPos, hasPath && this.progress < 1 && this.playing && this.interpolateData(this.progress).altKm > 0)
+    const landerPos = this.scene.active ? this.scene.landerPosition() : hasPath ? this.pointAlong(this.progress) : null
+    this.vehicles.update(
+      landerPos,
+      this.scene.active ? this.scene.engineOn : hasPath && this.progress < 1 && this.playing && this.interpolateData(this.progress).altKm > 0,
+    )
+    this.vehicles.setDust(this.scene.active ? this.scene.dustAt : null)
 
     if (this.trajectoryPoints.length > 1 && this.config.showTrajectory) {
       if (this.follow) {

@@ -66,15 +66,17 @@ if (embedded) {
     globe.viewFromSurface(-89.54, 0, 'sun')
   })
   action('🎥 Seguir descenso', () => globe.setFollowTrajectory(true))
-  action('🚀 Módulo de aterrizaje + descenso', () => {
-    const s = MOCK_SITES[0]
-    globe.selectSite(s)
-    globe.setTrajectory(generateDescentArc(s.lat, s.lon))
-    void globe.setVehicles({ lander: true })
+  // IM-2 Mons Mouton (GET /sites). Vectores reales de POST /evaluate para 2026-12-21T08:00:00Z (Sol 6.5°, Tierra 10.5° sobre el horizonte).
+  const SCENE_SITE = { lat: -84.79, lon: 31.2, sun: [0.0237, 0.1126, -0.9934], earth: [-0.5971, 0.1825, -0.7812] } as const
+  action('🎬 Escena de alunizaje (IM-2 Mons Mouton)', () => {
+    // Sol y Tierra reales de la API para ese sitio y fecha (SAMPLE), para que el cielo coincida
+    globe.setSunFromLocal(SCENE_SITE.lat, SCENE_SITE.lon, [...SCENE_SITE.sun])
+    globe.setEarthFromLocal(SCENE_SITE.lat, SCENE_SITE.lon, [...SCENE_SITE.earth])
+    // empieza siempre desde la vista global
+    globe.reset()
+    setTimeout(() => globe.playLandingScene({ lat: SCENE_SITE.lat, lon: SCENE_SITE.lon }), 1800)
   })
-  action('🧑‍🚀 Astronauta en Shackleton', () => {
-    void globe.setVehicles({ astronaut: { lat: MOCK_SITES[0].lat, lon: MOCK_SITES[0].lon } }).then(() => globe.viewVehicle('astronaut'))
-  })
+  action('⏹ Salir de la escena', () => globe.stopLandingScene())
   const reset = document.createElement('button')
   reset.textContent = '↺ Vista global'
   reset.onclick = () => globe.reset()
@@ -89,6 +91,9 @@ if (embedded) {
     ;[...panel.querySelectorAll('button')].forEach((b) => b.classList.toggle('active', b.textContent === s.name))
   }
   globe.on('siteClick', (s) => pick(s.id))
+  const phaseNames = { arrival: 'Vuelo hacia el sitio…', descent: 'Descenso', landed: 'Posado', done: 'Escena completa (arrastra para orbitar)' } as const
+  globe.on('scenePhase', ({ phase }) => (readout.textContent = phaseNames[phase]))
+  globe.on('sceneTelemetry', (t) => (readout.textContent = `Descenso · alt ${t.altM.toFixed(0)} m · ${t.vMps.toFixed(1)} m/s (ilustrativo)`))
   globe.on('loading', ({ pending }) => (status.textContent = pending > 0 ? `Cargando imagen… (${pending})` : ''))
   globe.on('trajectoryProgress', (p) => (readout.textContent = `Descenso ${(p.progress * 100).toFixed(0)}% · alt ${p.altKm.toFixed(1)} km`))
   globe.on('globeClick', ({ lat, lon }) => (readout.textContent = `lat ${lat.toFixed(3)}°, lon ${lon.toFixed(3)}°`))

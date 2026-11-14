@@ -7,6 +7,7 @@ import {
   Credit,
   DistanceDisplayCondition,
   Entity,
+  HeadingPitchRoll,
   Math as CesiumMath,
   Matrix3,
   Matrix4,
@@ -30,6 +31,7 @@ export class Vehicles {
   private lander: Entity | null = null
   private astronaut: Entity | null = null
   private plume: ParticleSystem | null = null
+  private dust: ParticleSystem | null = null
   private credited = false
   astronautPos: Cartesian3 | null = null
 
@@ -81,6 +83,38 @@ export class Vehicles {
     )
   }
 
+  /**
+   * Polvo levantado al posarse. `at` es el punto de contacto con el suelo (null lo apaga).
+   * Emite casi en horizontal: en vacío el polvo sale en trayectorias balísticas, sin nube que flote.
+   */
+  setDust(at: Cartesian3 | null) {
+    if (!this.dust) {
+      this.dust = this.viewer.scene.primitives.add(
+        new ParticleSystem({
+          image: dustSprite(),
+          startColor: Color.fromCssColorString('#b9b3a8').withAlpha(0.55),
+          endColor: Color.fromCssColorString('#8a857b').withAlpha(0),
+          startScale: 1,
+          endScale: 7,
+          minimumParticleLife: 1.4,
+          maximumParticleLife: 3,
+          minimumSpeed: 6,
+          maximumSpeed: 16,
+          imageSize: new Cartesian2(1, 1),
+          sizeInMeters: true,
+          emissionRate: 120,
+          lifetime: Number.MAX_VALUE,
+          loop: true,
+          emitter: new ConeEmitter(CesiumMath.toRadians(86)),
+          emitterModelMatrix: Matrix4.fromTranslation(new Cartesian3(0, 0, 0.4)),
+          show: false,
+        }),
+      )
+    }
+    this.dust.show = !!at
+    if (at) this.dust.modelMatrix = Transforms.eastNorthUpToFixedFrame(at)
+  }
+
   /** Coloca (o quita, con null) un astronauta de pie en el suelo. `groundM` es la altura del terreno. */
   setAstronaut(at: { lat: number; lon: number; headingDeg?: number } | null, groundM = 0) {
     if (this.astronaut) this.viewer.entities.remove(this.astronaut)
@@ -93,7 +127,8 @@ export class Vehicles {
       id: 'veh:astronaut',
       name: 'Astronauta (modelo NASA)',
       position: pos,
-      orientation: undefined,
+      // headingDeg = azimut hacia el que mira (0 = norte, 90 = este). Cesium mide el rumbo del modelo desde el este.
+      orientation: Transforms.headingPitchRollQuaternion(pos, new HeadingPitchRoll(CesiumMath.toRadians((at.headingDeg ?? 0) - 90), 0, 0)),
       model: {
         uri: ASTRONAUT_URL,
         scale: ASTRONAUT_SCALE,
@@ -123,6 +158,19 @@ export class Vehicles {
     const display = (this.viewer.scene as unknown as { frameState: { creditDisplay: { addStaticCredit(c: Credit): void } } }).frameState.creditDisplay
     display.addStaticCredit(new Credit('NASA 3D Resources — Apollo Lunar Module, Astronaut', false))
   }
+}
+
+function dustSprite(): HTMLCanvasElement {
+  const c = document.createElement('canvas')
+  c.width = c.height = 64
+  const g = c.getContext('2d')!
+  const grad = g.createRadialGradient(32, 32, 0, 32, 32, 32)
+  grad.addColorStop(0, 'rgba(255,255,255,1)')
+  grad.addColorStop(0.5, 'rgba(255,255,255,0.45)')
+  grad.addColorStop(1, 'rgba(255,255,255,0)')
+  g.fillStyle = grad
+  g.fillRect(0, 0, 64, 64)
+  return c
 }
 
 function plumeSprite(): HTMLCanvasElement {
