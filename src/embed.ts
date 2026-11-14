@@ -47,6 +47,9 @@ export function connectToHost(globe: LunarGlobe, allowedOrigins: string[]): () =
       case 'VIEW_FROM_SURFACE':
         globe.viewFromSurface(msg.payload.lat, msg.payload.lon, msg.payload.look)
         break
+      case 'SET_VIEW':
+        globe.setView(msg.payload)
+        break
       case 'FOLLOW_TRAJECTORY':
         globe.setFollowTrajectory(msg.payload.enabled)
         break

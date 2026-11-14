@@ -1,6 +1,7 @@
 import {
   Credit,
   GeographicTilingScheme,
+  Rectangle,
   UrlTemplateImageryProvider,
   type ImageryLayer,
 } from 'cesium'
@@ -36,9 +37,11 @@ export const LAYER_DEFS: Record<LayerId, LayerDef> = {
   },
 }
 
-export function createImageryProvider(id: LayerId): UrlTemplateImageryProvider {
+export function createImageryProvider(id: LayerId, opts: { polarFix?: boolean } = {}): UrlTemplateImageryProvider {
   const def = LAYER_DEFS[id]
   return new UrlTemplateImageryProvider({
+    // La capa LOLA global tiene el mismo abanico polar: con polarFix se recorta bajo -85°
+    rectangle: id === 'lolaShade' && opts.polarFix ? Rectangle.fromDegrees(-180, -85, 180, 90) : undefined,
     url: def.url,
     tilingScheme: new GeographicTilingScheme({ ellipsoid: MOON }),
     maximumLevel: def.maximumLevel,

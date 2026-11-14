@@ -9,9 +9,12 @@ import {
   DistanceDisplayCondition,
   Color,
   DirectionalLight,
+  EllipsoidTerrainProvider,
   Entity,
   Globe,
   HeadingPitchRange,
+  HeightReference,
+  type ImageryLayer,
   HorizontalOrigin,
   LabelStyle,
   Math as CesiumMath,
@@ -27,6 +30,8 @@ import {
 import { MOON } from './moon'
 import { CelestialSky, FAR_PLANE_M, createSkyBox } from './sky'
 import { polarSouthToLatLon } from './geo'
+import { createMoonTerrain, groundHeight, groundHeights } from './terrain'
+import { PolarSouthImageryProvider } from './polar'
 import { LAYER_DEFS, createImageryProvider, type LayerMap } from './layers'
 import type {
   LandingSite,
@@ -44,6 +49,9 @@ const DEFAULTS: Required<Omit<LunarGlobeConfig, 'sunDirection'>> & Pick<LunarGlo
   gridStepDeg: 30,
   showSiteLabels: true,
   showTrajectory: true,
+  terrain: true,
+  terrainExaggeration: 1,
+  polarFix: true,
   showStars: true,
   showSun: true,
   showEarth: true,
@@ -88,6 +96,9 @@ export class LunarGlobe {
   private userInteracting = false
   private flying = false
   private sky!: CelestialSky
+  private moonTerrain = createMoonTerrain()
+  private flatTerrain = new EllipsoidTerrainProvider({ ellipsoid: MOON })
+  private polarLayer: ImageryLayer | null = null
   private psrEntities: Entity[] = []
   private trajectoryData: TrajectoryPoint[] = []
   private follow = false
@@ -119,6 +130,7 @@ export class LunarGlobe {
     scene.globe.baseColor = Color.fromCssColorString('#1b1b1b')
     scene.globe.showGroundAtmosphere = false
     scene.globe.enableLighting = false
+    scene.globe.depthTestAgainstTerrain = true // pines y trayectoria no se ven a través del relieve
     scene.fog.enabled = false
     if (scene.sun) scene.sun.show = false // el Sol/Luna de Cesium son los de la Tierra
     if (scene.moon) scene.moon.show = false
@@ -138,6 +150,7 @@ export class LunarGlobe {
       destination: Cartesian3.fromDegrees(0, -20, 9_000_000, MOON),
     })
 
+    this.applyTerrain()
     this.applyLayers()
     this.applyGrid()
     this.applyLighting()
@@ -174,6 +187,7 @@ export class LunarGlobe {
     this.config = { ...prev, ...partial, layers: { ...prev.layers, ...partial.layers } }
     this.applyLayers()
     if (partial.showGrid !== undefined || partial.gridStepDeg !== undefined) this.applyGrid()
+    if (partial.terrain !== undefined || partial.terrainExaggeration !== undefined) this.applyTerrain()
     if (partial.sunDirection !== undefined) this.applyLighting()
     if (partial.showStars !== undefined && this.viewer.scene.skyBox)
       this.viewer.scene.skyBox.show = this.config.showStars
@@ -204,6 +218,21 @@ export class LunarGlobe {
     })
   }
 
+  /** Coloca la cámara de golpe sobre (lat, lon) a `altM` metros sobre la esfera; pitch -90 = mirando abajo. */
+  setView(v: { lat: number; lon: number; altM: number; headingDeg?: number; pitchDeg?: number }) {
+    this.stopFollow()
+    this.flying = false
+    this.selectedPoint = { lat: v.lat, lon: v.lon } // detiene la auto-rotación
+    this.viewer.camera.setView({
+      destination: Cartesian3.fromDegrees(v.lon, v.lat, v.altM, MOON),
+      orientation: {
+        heading: CesiumMath.toRadians(v.headingDeg ?? 0),
+        pitch: CesiumMath.toRadians(v.pitchDeg ?? -90),
+        roll: 0,
+      },
+    })
+  }
+
   clearSelection() {
     this.selectedId = null
     this.selectedPoint = null
@@ -213,10 +242,20 @@ export class LunarGlobe {
   setTrajectory(points: TrajectoryPoint[]) {
     this.stopFollow()
     this.trajectoryData = points
-    this.trajectoryPoints = points.map((p) =>
-      Cartesian3.fromDegrees(p.lon, p.lat, (p.altKm ?? 0) * 1000, MOON),
-    )
     this.progress = 0
+    this.buildTrajectory(points.map(() => 0))
+    // La altitud es sobre la superficie: se suma la altura real del terreno cuando se conoce
+    if (this.config.terrain && points.length > 1) {
+      void groundHeights(this.moonTerrain, points).then((g) => {
+        if (this.trajectoryData === points && !this.disposed) this.buildTrajectory(g)
+      })
+    }
+  }
+
+  private buildTrajectory(ground: number[]) {
+    this.trajectoryPoints = this.trajectoryData.map((p, i) =>
+      Cartesian3.fromDegrees(p.lon, p.lat, (p.altKm ?? 0) * 1000 + ground[i], MOON),
+    )
     this.refreshTrajectory()
   }
 
@@ -260,9 +299,11 @@ export class LunarGlobe {
   }
 
   /** Cámara en la superficie del sitio (2 m) mirando al astro indicado, o al horizonte norte si no se indica. */
-  viewFromSurface(lat: number, lon: number, look?: SkyBody) {
+  async viewFromSurface(lat: number, lon: number, look?: SkyBody) {
     this.stopFollow()
-    const pos = Cartesian3.fromDegrees(lon, lat, 2, MOON)
+    const ground = this.config.terrain ? await groundHeight(this.moonTerrain, lat, lon) : 0
+    if (this.disposed) return
+    const pos = Cartesian3.fromDegrees(lon, lat, ground + 2, MOON)
     const frame = Transforms.eastNorthUpToFixedFrame(pos)
     const north = Matrix4.multiplyByPointAsVector(frame, Cartesian3.UNIT_Y, new Cartesian3())
     const target = (look && this.sky.direction(look)) || north
@@ -314,11 +355,9 @@ export class LunarGlobe {
           entities.add({
             name: item.name ?? `PSR ${item.gid}`,
             polygon: {
+              // sin `height`: Cesium lo dibuja pegado al terreno
               hierarchy: new PolygonHierarchy(outer, holes.map((h) => new PolygonHierarchy(h))),
-              height: 100,
-              material: Color.fromCssColorString('#3b82f6').withAlpha(0.35),
-              outline: true,
-              outlineColor: Color.fromCssColorString('#93c5fd'),
+              material: Color.fromCssColorString('#3b82f6').withAlpha(0.4),
             },
           }),
         )
@@ -374,16 +413,31 @@ export class LunarGlobe {
       const wanted = this.config.layers[id] ?? false
       let layer = this.layers[id]
       if (wanted && !layer) {
-        layer = imageryLayers.addImageryProvider(createImageryProvider(id))
+        layer = imageryLayers.addImageryProvider(createImageryProvider(id, { polarFix: this.config.polarFix }))
         this.layers[id] = layer
         // WAC debajo, LOLA encima
-        if (order === 0) imageryLayers.lowerToBottom(layer)
+        if (order === 0) {
+          imageryLayers.lowerToBottom(layer)
+          if (this.config.polarFix && !this.polarLayer) {
+            // mosaico polar reproyectado sobre el WAC global (abanico en ±90°)
+            this.polarLayer = imageryLayers.addImageryProvider(new PolarSouthImageryProvider(), 1)
+          }
+        }
       }
+      if (id === 'wac' && this.polarLayer) this.polarLayer.show = wanted
       if (layer) {
         layer.show = wanted
         if (id === 'lolaShade') layer.alpha = this.config.lolaOpacity
       }
     })
+  }
+
+  private applyTerrain() {
+    const { viewer } = this
+    viewer.terrainProvider = this.config.terrain ? this.moonTerrain : this.flatTerrain
+    viewer.scene.verticalExaggeration = this.config.terrain ? this.config.terrainExaggeration : 1
+    // Las entidades relativas al suelo y la trayectoria dependen de la altura del terreno
+    if (this.trajectoryData.length) this.setTrajectory(this.trajectoryData)
   }
 
   private applyGrid() {
@@ -396,20 +450,21 @@ export class LunarGlobe {
     const line = (coords: number[]) =>
       entities.add({
         polyline: {
-          positions: Cartesian3.fromDegreesArrayHeights(coords, MOON),
+          positions: Cartesian3.fromDegreesArray(coords, MOON),
           width: 1,
           material: color,
-          arcType: ArcType.NONE,
+          arcType: ArcType.GEODESIC,
+          clampToGround: true,
         },
       })
     for (let lon = -180; lon < 180; lon += step) {
       const c: number[] = []
-      for (let lat = -90; lat <= 90; lat += 3) c.push(lon, lat, 300)
+      for (let lat = -90; lat <= 90; lat += 3) c.push(lon, lat)
       this.gridEntities.push(line(c))
     }
     for (let lat = -90 + step; lat < 90; lat += step) {
       const c: number[] = []
-      for (let lon = -180; lon <= 180; lon += 3) c.push(lon, lat, 300)
+      for (let lon = -180; lon <= 180; lon += 3) c.push(lon, lat)
       this.gridEntities.push(line(c))
     }
   }
@@ -445,6 +500,7 @@ export class LunarGlobe {
         id: `site:${site.id}`,
         position: Cartesian3.fromDegrees(site.lon, site.lat, PIN_HEIGHT_M, MOON),
         point: {
+          heightReference: HeightReference.RELATIVE_TO_GROUND,
           pixelSize: selected ? 14 : 9,
           color: this.pinColor(site),
           outlineColor: Color.BLACK.withAlpha(0.8),
@@ -460,6 +516,7 @@ export class LunarGlobe {
               fillColor: selected ? Color.fromCssColorString(SELECTED_PIN) : Color.WHITE,
               verticalOrigin: VerticalOrigin.BOTTOM,
               horizontalOrigin: HorizontalOrigin.LEFT,
+              heightReference: HeightReference.RELATIVE_TO_GROUND,
               pixelOffset: new Cartesian2(10, -6),
               // en vista global los sitios del polo se solapan: etiquetas solo al acercarse
               distanceDisplayCondition: new DistanceDisplayCondition(0, 2_500_000),
@@ -496,8 +553,9 @@ export class LunarGlobe {
           PIN_HEIGHT_M,
           MOON,
         ),
-        point: { pixelSize: 8, color: Color.WHITE, outlineColor: Color.fromCssColorString('#ff6b35'), outlineWidth: 3 },
+        point: { heightReference: HeightReference.RELATIVE_TO_GROUND, pixelSize: 8, color: Color.WHITE, outlineColor: Color.fromCssColorString('#ff6b35'), outlineWidth: 3 },
         label: {
+          heightReference: HeightReference.RELATIVE_TO_GROUND,
           text: 'Touchdown',
           font: '11px system-ui, sans-serif',
           style: LabelStyle.FILL_AND_OUTLINE,

@@ -26,6 +26,9 @@ export interface LunarGlobeConfig {
   gridStepDeg?: number // separación de la graticula (default 30)
   showSiteLabels?: boolean // etiquetas junto a los pines (default true)
   showTrajectory?: boolean // arco de descenso (default true)
+  terrain?: boolean // relieve global LOLA (default true)
+  terrainExaggeration?: number // exageración vertical, 1 = real (default 1)
+  polarFix?: boolean // mosaico polar sur sin abanico bajo -83° (solo al crear; default true)
   showStars?: boolean // cielo estrellado (default true)
   showSun?: boolean // disco solar; solo se dibuja si se conoce su dirección (default true)
   showEarth?: boolean // Tierra a tamaño angular real (default true)
@@ -67,6 +70,7 @@ export type GlobeInboundMessage =
   | { type: 'SET_PSR'; payload: PsrItem[] }
   | { type: 'LOOK_AT'; payload: { body: SkyBody } }
   | { type: 'VIEW_FROM_SURFACE'; payload: { lat: number; lon: number; look?: SkyBody } }
+  | { type: 'SET_VIEW'; payload: { lat: number; lon: number; altM: number; headingDeg?: number; pitchDeg?: number } }
   | { type: 'FOLLOW_TRAJECTORY'; payload: { enabled: boolean } }
   | { type: 'PLAY_ANIMATION'; payload: { playing: boolean } }
   | { type: 'RESET' }

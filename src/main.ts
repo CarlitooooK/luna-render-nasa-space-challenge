@@ -3,7 +3,12 @@ import { LunarGlobe } from './LunarGlobe'
 import { connectToHost } from './embed'
 import { MOCK_SITES, generateDescentArc } from './data/mockSites'
 
-const globe = new LunarGlobe(document.getElementById('globe')!)
+const q = new URLSearchParams(location.search)
+// ?polarfix=0 y ?terrain=0 permiten comparar contra la versión sin arreglo del polo / sin relieve
+const globe = new LunarGlobe(document.getElementById('globe')!, {
+  polarFix: q.get('polarfix') !== '0',
+  terrain: q.get('terrain') !== '0',
+})
 const panel = document.getElementById('panel')!
 const embedded = window.parent !== window
 
@@ -38,6 +43,8 @@ if (embedded) {
   toggle('Rejilla lat/lon', (v) => globe.setConfig({ showGrid: v }))
   toggle('Capa elevación LOLA', (v) => globe.setConfig({ layers: { lolaShade: v } }))
   toggle('Iluminación solar (mock)', (v) => globe.setSunDirection(v ? [1, 0.2, -0.3] : null))
+  toggle('Relieve (LOLA)', (v) => globe.setConfig({ terrain: v }), q.get('terrain') !== '0')
+  toggle('Exagerar relieve ×3', (v) => globe.setConfig({ terrainExaggeration: v ? 3 : 1 }))
   toggle('Estrellas', (v) => globe.setConfig({ showStars: v }), true)
   toggle('Sol y Tierra', (v) => globe.setConfig({ showSun: v, showEarth: v }), true)
   toggle('Auto-rotación', (v) => globe.setConfig({ autoRotate: v }), true)

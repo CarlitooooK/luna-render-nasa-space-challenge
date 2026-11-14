@@ -25,8 +25,8 @@ Host → globo:
 - `SET_SUN_LOCAL {lat,lon,vector}` y `SET_EARTH_LOCAL {lat,lon,vector}`: aceptan `sun_vector_3d` / `earth_vector_3d` tal cual (convención D-008). Dibujan el Sol y la Tierra y encienden la iluminación solar.
 - `SET_PSR` (`psrs` de `GET /psr/nearby`, tal cual): polígonos sobre la superficie.
 - `SET_TRAJECTORY`, `PLAY_ANIMATION`, `FOLLOW_TRAJECTORY {enabled}` (cámara que sigue al módulo).
-- `LOOK_AT {body: 'sun'|'earth'}` y `VIEW_FROM_SURFACE {lat,lon,look?}` (cámara a 2 m del suelo).
-- `SET_CONFIG` (rejilla, capas, `showStars`, `showSun`, `showEarth`, `autoRotate`…).
+- `LOOK_AT {body: 'sun'|'earth'}`, `VIEW_FROM_SURFACE {lat,lon,look?}` (cámara a 2 m del suelo real) y `SET_VIEW {lat,lon,altM,headingDeg?,pitchDeg?}`.
+- `SET_CONFIG` (rejilla, capas, `terrain`, `terrainExaggeration`, `showStars`, `showSun`, `showEarth`, `autoRotate`…).
 
 Globo → host: `READY`, `SITE_CLICKED`, `GLOBE_CLICKED`, `ANIMATION_COMPLETE`, `LOADING {pending}` (teselas en descarga; 0 = estable), `TRAJECTORY_PROGRESS {progress,lat,lon,altKm}` (≤10/s, para HUD).
 
@@ -36,6 +36,12 @@ import { LunarGlobe } from 'lunar-globe-renderer/src'
 const globe = new LunarGlobe(el); globe.setSites(sites); globe.on('siteClick', s => ...)
 ```
 Requiere servir `public/cesium` y definir `CESIUM_BASE_URL` (ver `vite.config.ts`).
+
+## Relieve y polo (fase 1 completa)
+- **Relieve global real:** `src/terrain.ts` usa las teselas DEM de LOLA de Moon Trek como terreno de Cesium. Son PNG de 8 bits; la conversión a metros se **calibró contra el DEM real del backend** (`GET /terrain/patch`, 24 puntos de toda la Luna, 2026-11-14): `elevación ≈ 76.8·DN − 9049 m`, R² = 0.997, RMSE ≈ 127 m. Resolución ~666 m/px (nivel 5); a más zoom se interpola. Pines, PSR, rejilla, trayectoria y la cámara de superficie siguen el terreno.
+- **Sin sombreado por relieve:** el terreno de Cesium sin normales no recibe sombras de la luz solar; el relieve se percibe por la geometría, el horizonte y la iluminación horneada de la imagen.
+- **Polo (`polarFix`, por defecto activo):** `src/polar.ts` reproyecta el mosaico polar sur (`LRO_WAC_Mosaic_SPole60_100m_v02`, estereográfico) bajo -83° con mezcla hasta -85°, y recorta la capa LOLA bajo -85°. **Reduce el abanico alrededor del polo a la mitad, no lo elimina** (es un hueco de datos del mosaico), y el mosaico polar tiene otra iluminación que el global, por lo que se notan costuras tenues.
+- Depuración: `?terrain=0` y `?polarfix=0` en la URL de la demo.
 
 ## Cielo (fase 2)
 - **Estrellas:** cielo Tycho2 de Cesium (no se crea solo con elipsoide lunar; se configura en `src/sky.ts`).
@@ -48,10 +54,10 @@ Requiere servir `public/cesium` y definir `CESIUM_BASE_URL` (ver `vite.config.ts
 `wac` (base, nivel 8) y `lolaShade` (elevación en color, nivel 5, opacidad configurable). Atribución NASA incluida vía créditos de Cesium ("Data attribution").
 
 ## Limitaciones conocidas
-- **Abanico en el polo:** existe la capa polar `LRO_WAC_Mosaic_SPole60_100m_v02` (`trek.nasa.gov/tiles/Moon/SP/…`), pero está en proyección estereográfica polar (metros, ±1 095 km) y Cesium no la acepta directo. Arreglarlo exige un `ImageryProvider` propio que reproyecte. Pendiente.
+- **Polo:** ver arriba; mejora parcial. Queda un abanico residual de ~10 km alrededor del polo.
 - **Horizonte sin terreno:** vista desde superficie con horizonte esférico; el horizonte real (`horizon_profile`) vive en la consola.
 - **Suelo borroso a ras de superficie:** la imagen tiene ~100 m/px.
-- **Sin relieve geométrico:** la esfera es lisa; el relieve se percibe por la imagen y la capa LOLA. Para 3D real hace falta generar terreno quantized-mesh desde el DEM LOLA del polo sur. El detalle topográfico del sitio lo da el visor de la consola (`/terrain/patch`).
+- **Relieve de ~666 m/px y pasos de ~77 m:** suficiente para el contexto global y las vistas oblicuas, no para el detalle del sitio. Para el polo sur el backend tiene LOLA a 80 m/px (`LDEM_80S_80MPP_ADJ`); servirlo como teselas de terreno mejoraría mucho el resultado (pregunta `P-008` del handoff). El detalle local lo da el visor de la consola (`/terrain/patch`).
 - **Polo:** en proyección geográfica la imagen converge en abanico justo en ±90°. Si molesta, usar teselas polares estereográficas de Moon Trek.
 - Resolución máxima ~100 m/px (WAC). LROC NAC (0.5 m/px) es v2 según `docs/08` del handoff.
 - Los sitios de la demo son mock.
