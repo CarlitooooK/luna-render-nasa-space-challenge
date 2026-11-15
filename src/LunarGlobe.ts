@@ -1,5 +1,6 @@
 import './moon' // primero: fija el elipsoide lunar antes de crear nada de Cesium
 import {
+  CameraEventType,
   ArcType,
   BoundingSphere,
   CallbackProperty,
@@ -170,6 +171,7 @@ export class LunarGlobe {
       scene3DOnly: true,
       skyAtmosphere: false,
       skyBox: createSkyBox(),
+      showRenderLoopErrors: false, // sin el panel de error de Cesium: recoverFromRenderError() reanuda el render
       globe: new Globe(MOON),
     })
 
@@ -259,6 +261,14 @@ export class LunarGlobe {
     const ctrl = scene.screenSpaceCameraController
     ctrl.minimumZoomDistance = 1_000
     ctrl.maximumZoomDistance = 25_000_000
+    // La rueda la atiende trackpad.ts (zoom estable); Cesium conserva el zoom con botón derecho y con pellizco táctil
+    ctrl.zoomEventTypes = [CameraEventType.RIGHT_DRAG, CameraEventType.PINCH]
+    // Red de seguridad: si una excepción detiene el bucle de render de Cesium, se recupera la vista global en vez de
+    // quedar congelado. No basta `scene.renderError`: los errores del controlador de cámara y de `preRender` llegan
+    // directo al bucle del widget, que lo apaga sin emitir ese evento.
+    this.watchdog = window.setInterval(() => {
+      if (!this.disposed && !this.paused && !this.viewer.useDefaultRenderLoop) this.recoverRenderLoop()
+    }, 1000)
 
     this.viewer.camera.setView({
       destination: Cartesian3.fromDegrees(0, -20, 9_000_000, MOON),
@@ -513,6 +523,7 @@ export class LunarGlobe {
   /** Pausa o reanuda el dibujado (el estado, la cámara y los mensajes siguen). */
   setPaused(paused: boolean) {
     if (this.disposed) return
+    this.paused = paused
     this.viewer.useDefaultRenderLoop = !paused
   }
 
@@ -768,6 +779,29 @@ export class LunarGlobe {
     })
   }
 
+  private paused = false
+  private watchdog = 0
+  private renderErrors = 0
+  /**
+   * El bucle de render se detuvo por una excepción: la cámara vuelve a la vista global (con orientación nueva, por
+   * si la anterior quedó en NaN) y se reanuda. Hasta 5 veces por sesión, para no ocultar un error que se repite.
+   */
+  private recoverRenderLoop() {
+    if (++this.renderErrors > 5) return
+    console.warn('[lunar-globe] el render se detuvo por un error; se recupera la vista global')
+    const cam = this.viewer.camera
+    cam.cancelFlight()
+    cam.lookAtTransform(Matrix4.IDENTITY)
+    this.stopFollow()
+    this.camLocked = false
+    const p = this.selectedPoint
+    cam.setView({
+      destination: Cartesian3.fromDegrees(p?.lon ?? 0, p ? Math.max(-60, Math.min(60, p.lat)) : -20, GLOBAL_VIEW_ALT_M, MOON),
+      orientation: { heading: 0, pitch: CesiumMath.toRadians(-90), roll: 0 },
+    })
+    this.viewer.useDefaultRenderLoop = true
+  }
+
   /** Vuelve a la vista global. */
   reset() {
     this.orbit = false
@@ -790,6 +824,7 @@ export class LunarGlobe {
   dispose() {
     if (this.disposed) return
     this.disposed = true
+    window.clearInterval(this.watchdog)
     this.detachTrackpad()
     this.viewer.scene.preRender.removeEventListener(this.onPreRender)
     this.handler.destroy()

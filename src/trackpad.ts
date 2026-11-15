@@ -1,7 +1,9 @@
-// Gestos de trackpad para el globo. Cesium trata todo evento `wheel` como zoom, así que el arrastre con dos
-// dedos de un trackpad acercaba y alejaba en vez de mover, y el pellizco (que macOS manda como `wheel` con
-// `ctrlKey`) no hacía nada o hacía zoom de la página. Aquí se interceptan esos gestos antes de que lleguen a
-// Cesium; la rueda de un ratón sigue llegando a Cesium tal cual.
+// Rueda y gestos de trackpad para el globo. Cesium trata todo evento `wheel` como zoom, así que el arrastre con
+// dos dedos de un trackpad acercaba y alejaba en vez de mover, y el pellizco (que macOS manda como `wheel` con
+// `ctrlKey`) no hacía nada o hacía zoom de la página. Aquí se atienden los tres antes de que lleguen a Cesium.
+// La rueda del ratón tampoco se deja a Cesium: su zoom con rueda (`handleZoom`) da un vector NaN si la rueda
+// se usa en el centro exacto del lienzo tras girar el globo, y el render se detiene para siempre (verificado
+// con Cesium 1.147: arrastre con el botón izquierdo y luego rueda en el centro).
 import { Cartographic, type PerspectiveFrustum, type Viewer } from 'cesium'
 import { MOON } from './moon'
 
@@ -20,7 +22,7 @@ export interface WheelLike {
  * Qué gesto es un evento `wheel`:
  * - `pinch`: pellizco del trackpad (macOS lo manda con `ctrlKey`). También Ctrl + rueda del ratón: zoom igual.
  * - `pan`: arrastre con dos dedos del trackpad.
- * - `wheel`: rueda de un ratón; se deja a Cesium (zoom).
+ * - `wheel`: rueda de un ratón (zoom, más suave por muesca que el pellizco).
  */
 export function classifyWheel(e: WheelLike): WheelIntent {
   if (e.ctrlKey) return 'pinch'
@@ -30,8 +32,15 @@ export function classifyWheel(e: WheelLike): WheelIntent {
   return Number.isInteger(e.deltaY) && Math.abs(e.deltaY) >= 50 ? 'wheel' : 'pan'
 }
 
-/** Factor de altura de un pellizco: `deltaY` negativo (abrir los dedos) acerca. */
-export const pinchFactor = (deltaY: number) => Math.exp(Math.max(-60, Math.min(60, deltaY)) * 0.01)
+/**
+ * Factor de altura de un zoom: `deltaY` negativo (abrir los dedos, rueda hacia arriba) acerca. El pellizco manda
+ * muchos deltas pequeños; la rueda, muescas de ~100 px (o líneas en Firefox, `deltaMode` 1, ~33 px cada una).
+ */
+export function zoomFactor(intent: 'pinch' | 'wheel', deltaY: number, deltaMode = 0): number {
+  const px = deltaMode === 1 ? deltaY * 33 : deltaMode === 2 ? deltaY * 400 : deltaY
+  const k = intent === 'pinch' ? 0.01 : 0.0025
+  return Math.exp(Math.max(-60, Math.min(60, px * k)))
+}
 
 export interface TrackpadHost {
   viewer: Viewer
@@ -49,7 +58,6 @@ export interface TrackpadHost {
 export function attachTrackpad(container: HTMLElement, host: TrackpadHost): () => void {
   const onWheel = (e: WheelEvent) => {
     const intent = classifyWheel(e as WheelEvent & WheelLike)
-    if (intent === 'wheel') return // rueda de ratón: la atiende Cesium
     // Sin esto, el pellizco hace zoom de toda la página y Cesium recibiría el evento como zoom
     e.preventDefault()
     e.stopPropagation()
@@ -69,9 +77,9 @@ export function attachTrackpad(container: HTMLElement, host: TrackpadHost): () =
     }
 
     const h = Cartographic.fromCartesian(camera.positionWC, MOON).height
-    if (intent === 'pinch') {
+    if (intent !== 'pan') {
       const { min, max } = host.heightLimits()
-      const next = Math.max(min, Math.min(max, h * pinchFactor(e.deltaY)))
+      const next = Math.max(min, Math.min(max, h * zoomFactor(intent, e.deltaY, e.deltaMode)))
       const d = h - next
       if (d > 0) camera.zoomIn(d)
       else if (d < 0) camera.zoomOut(-d)
