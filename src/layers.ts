@@ -26,13 +26,13 @@ export const LAYER_DEFS: Record<LayerId, LayerDef> = {
   wac: {
     url: tileUrl('LRO_WAC_Mosaic_Global_303ppd_v02', 'jpg'),
     maximumLevel: 8,
-    credit: 'NASA/GSFC/ASU — LROC WAC (vía NASA Moon Trek)',
+    credit: 'NASA/GSFC/ASU — LROC WAC (via NASA Moon Trek)',
   },
   // Elevación LOLA codificada en color con sombreado, nivel 5.
   lolaShade: {
     url: tileUrl('LRO_LOLA_ClrShade_Global_128ppd_v04', 'png'),
     maximumLevel: 5,
-    credit: 'NASA/GSFC/MIT — LRO LOLA (vía NASA Moon Trek)',
+    credit: 'NASA/GSFC/MIT — LRO LOLA (via NASA Moon Trek)',
     alpha: 0.5,
   },
 }

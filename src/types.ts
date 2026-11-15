@@ -92,6 +92,8 @@ export type GlobeInboundMessage =
   | { type: 'SET_COMPARE_PINS'; payload: ComparePin[] }
   /** Marcador del pin libre (clic en el globo). `null` lo quita. */
   | { type: 'SET_CUSTOM_PIN'; payload: CustomPin | null }
+  /** Detiene (`true`) o reanuda (`false`) el dibujado. Para cuando la consola tapa el globo con otra escena. */
+  | { type: 'SET_PAUSED'; payload: { paused: boolean } }
   | { type: 'SET_HORIZON_DETAIL'; payload: { detailed: boolean } }
   /** Vista de horizonte (Lander POV): baja de la esfera al suelo del sitio. */
   | { type: 'SHOW_HORIZON'; payload: { lat: number; lon: number; headingDeg?: number } }

@@ -39,7 +39,7 @@ export class RegolithImageryProvider extends UrlTemplateImageryProvider {
       maximumLevel: MAX_LEVEL,
       tileWidth: SIZE,
       tileHeight: SIZE,
-      credit: new Credit('Textura de regolito procedural (ilustrativa)', true),
+      credit: new Credit('Procedural regolith texture (illustrative)', true),
     })
   }
 

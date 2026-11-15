@@ -44,7 +44,7 @@ export class PolarSouthImageryProvider extends UrlTemplateImageryProvider {
       maximumLevel: 8,
       tileWidth: TILE,
       tileHeight: TILE,
-      credit: new Credit('NASA/GSFC/ASU — LROC WAC polar sur (vía NASA Moon Trek)'),
+      credit: new Credit('NASA/GSFC/ASU — LROC WAC polar sur (via NASA Moon Trek)'),
     })
   }
 

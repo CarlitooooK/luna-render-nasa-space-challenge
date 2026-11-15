@@ -89,7 +89,7 @@ export function createMoonTerrain(): TerrainProvider {
     width: GRID,
     height: GRID,
     tilingScheme: new GeographicTilingScheme({ ellipsoid: MOON }),
-    credit: new Credit('NASA/GSFC/MIT — LRO LOLA DEM (vía NASA Moon Trek)'),
+    credit: new Credit('NASA/GSFC/MIT — LRO LOLA DEM (via NASA Moon Trek)'),
     callback: async (x: number, y: number, level: number) => {
       const lv = Math.min(level, DEM_MAX_LEVEL)
       const shift = level - lv

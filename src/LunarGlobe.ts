@@ -427,6 +427,12 @@ export class LunarGlobe {
     this.viewer.scene.requestRender()
   }
 
+  /** Pausa o reanuda el dibujado (el estado, la cámara y los mensajes siguen). */
+  setPaused(paused: boolean) {
+    if (this.disposed) return
+    this.viewer.useDefaultRenderLoop = !paused
+  }
+
   /** Marcador del pin libre elegido con un clic en el globo. */
   setCustomPin(pin: CustomPin | null) {
     const { entities } = this.viewer
