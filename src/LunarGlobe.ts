@@ -20,8 +20,10 @@ import {
   LabelStyle,
   Math as CesiumMath,
   Matrix4,
+  type Occluder,
   PolygonHierarchy,
   PolylineGlowMaterialProperty,
+  type Scene,
   ScreenSpaceEventHandler,
   ScreenSpaceEventType,
   Transforms,
@@ -81,6 +83,25 @@ const SITE_VIEW_RANGE_M = 120_000
 const PIN_HEIGHT_M = 200 // evita z-fighting con la superficie
 const AUTO_ROTATE_RAD_PER_S = 0.04
 const GLOBAL_VIEW_ALT_M = 9_000_000
+
+/**
+ * Cesium descarta lo que la Luna tapa con un "occluder": una esfera de radio `minimumRadius + minimumTerrainHeight`.
+ * Ese mínimo sale de las teselas en pantalla; mirando al cielo no hay ninguna y la esfera queda en el radio de
+ * referencia (1 737 400 m). Muchos sitios están por debajo (Apollo 11 a −1,9 km, Chang'e 4 a −5,9 km), así que la
+ * cámara de la vista de horizonte o de la escena queda DENTRO de la esfera, y en ese caso `Occluder` da por oculto
+ * todo: el Sol, la Tierra, sus etiquetas y el módulo desaparecían y solo quedaban las estrellas (verificado con
+ * Cesium 1.147). Con la cámara dentro no hay nada que la esfera pueda tapar, así que se quita, como Cesium ya hace
+ * con la cámara bajo tierra.
+ */
+function dropOccluderWhenInside(scene: Scene) {
+  const s = scene as unknown as { updateFrameState: () => void; frameState: { occluder?: Occluder } }
+  const update = s.updateFrameState.bind(scene)
+  s.updateFrameState = () => {
+    update()
+    const occluder = s.frameState.occluder
+    if (occluder && Cartesian3.magnitude(scene.camera.positionWC) <= occluder.radius) s.frameState.occluder = undefined
+  }
+}
 
 /**
  * Vuelo de un sitio a otro: primero se aleja, la Luna gira bajo la cámara y luego baja al sitio nuevo. La altura
@@ -186,6 +207,7 @@ export class LunarGlobe {
     scene.backgroundColor = Color.fromCssColorString('#05070d')
     // El Sol está a 9e8 m en el modelo: hay que ampliar el plano lejano de la cámara
     ;(scene.camera.frustum as { far: number }).far = FAR_PLANE_M
+    dropOccluderWhenInside(scene)
     if (scene.skyBox) scene.skyBox.show = this.config.showStars
     // Las partículas (columna de motor) avanzan con el reloj de Cesium: debe correr
     this.viewer.clock.shouldAnimate = true
