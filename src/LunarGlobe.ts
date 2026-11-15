@@ -37,6 +37,7 @@ import { detectTilesVersion, normalizeTilesUrl } from './terrarium'
 import { Vehicles } from './vehicles'
 import { LandingScene, type LandingSceneOptions } from './landingScene'
 import { HorizonView, type HorizonPoint, type HorizonViewOptions, type SkyState } from './horizonView'
+import { attachTrackpad } from './trackpad'
 import { RegolithImageryProvider, REGOLITH_MIN_TERRAIN_LEVEL } from './regolith'
 import { LAYER_DEFS, createImageryProvider, type LayerMap } from './layers'
 import type {
@@ -103,6 +104,9 @@ export class LunarGlobe {
   private handler: ScreenSpaceEventHandler
   private listeners: { [K in keyof LunarGlobeEvents]?: Listener<K>[] } = {}
   private userInteracting = false
+  /** Último gesto del trackpad: el giro automático espera un momento tras él. */
+  private lastGesture = 0
+  private detachTrackpad: () => void = () => {}
   private flying = false
   /** Tras RECENTER: gira aunque haya un sitio elegido. Lo apaga cualquier vista nueva. */
   private orbit = false
@@ -260,6 +264,14 @@ export class LunarGlobe {
     this.handler.setInputAction(up, ScreenSpaceEventType.LEFT_UP)
     this.handler.setInputAction(down, ScreenSpaceEventType.RIGHT_DOWN)
     this.handler.setInputAction(up, ScreenSpaceEventType.RIGHT_UP)
+    // Trackpad: pellizco = zoom, dos dedos = mover (en la vista de horizonte, mirar a la redonda)
+    this.detachTrackpad = attachTrackpad(container, {
+      viewer: this.viewer,
+      lookMode: () => this.horizon.active && this.horizon.phase === 'ready',
+      locked: () => this.scene.active || this.camLocked || this.follow || this.flying || (this.horizon.active && this.horizon.phase !== 'ready'),
+      touched: () => (this.lastGesture = performance.now()),
+      heightLimits: () => ({ min: ctrl.minimumZoomDistance, max: ctrl.maximumZoomDistance }),
+    })
 
     scene.preRender.addEventListener(this.onPreRender)
     this.emit('ready', undefined)
@@ -762,6 +774,7 @@ export class LunarGlobe {
   dispose() {
     if (this.disposed) return
     this.disposed = true
+    this.detachTrackpad()
     this.viewer.scene.preRender.removeEventListener(this.onPreRender)
     this.handler.destroy()
     this.viewer.destroy()
@@ -1063,7 +1076,7 @@ export class LunarGlobe {
       }
     }
 
-    const idle = (this.orbit || (!this.selectedId && !this.selectedPoint)) && !this.userInteracting
+    const idle = (this.orbit || (!this.selectedId && !this.selectedPoint)) && !this.userInteracting && now - this.lastGesture > 1500
     if (this.config.autoRotate && idle && !this.flying) {
       this.viewer.camera.rotate(Cartesian3.UNIT_Z, -AUTO_ROTATE_RAD_PER_S * dt)
     }
