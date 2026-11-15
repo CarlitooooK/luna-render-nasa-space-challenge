@@ -1,15 +1,16 @@
 import {
   Billboard,
   BillboardCollection,
-  CallbackPositionProperty,
-  CallbackProperty,
   Cartesian3,
   Color,
-  Entity,
+  EllipsoidGeometry,
+  GeometryInstance,
   HorizontalOrigin,
-  ImageMaterialProperty,
+  Material,
+  MaterialAppearance,
   Matrix3,
-  Quaternion,
+  Matrix4,
+  Primitive,
   SkyBox,
   VerticalOrigin,
   type PerspectiveFrustum,
@@ -112,11 +113,40 @@ function loadEarthTexture(): Promise<HTMLCanvasElement> {
 }
 
 /**
+ * Material de la Tierra iluminado por la luz de la escena (el Sol dibujado): da la fase.
+ * `MaterialAppearance` sombrea con `czm_phong`, cuyo difuso usa dos direcciones fijas respecto a la cámara (eye-space
+ * +Z y +Y) y no la luz: con él la Tierra se veía siempre llena. Aquí el difuso va en `emission` (Lambert con
+ * `czm_lightDirectionEC`) y el difuso y el especular de Phong quedan en cero. El lado nocturno conserva un 3 % para
+ * no perder la silueta.
+ */
+function earthMaterial(image: HTMLCanvasElement): Material {
+  return new Material({
+    fabric: {
+      uniforms: { image },
+      source: `
+        czm_material czm_getMaterial(czm_materialInput materialInput) {
+          czm_material material = czm_getDefaultMaterial(materialInput);
+          vec3 albedo = texture(image, materialInput.st).rgb;
+          float lambert = max(dot(normalize(materialInput.normalEC), czm_lightDirectionEC), 0.0);
+          material.diffuse = vec3(0.0);
+          material.specular = 0.0;
+          material.emission = albedo * (0.03 + 0.97 * lambert * czm_lightColor);
+          return material;
+        }`,
+    },
+    translucent: false,
+  })
+}
+
+/**
  * Sol y Tierra como referencia en el cielo lunar. Todo en el marco fijo lunar de Cesium.
  *
- * La Tierra lee su posición y orientación con propiedades de callback: Cesium la trata como geometría dinámica y
- * solo mueve su matriz. Antes se le asignaba una `ConstantPositionProperty` nueva en cada paso del timeline, lo que
- * obligaba a reconstruir el elipsoide de forma asíncrona, y mientras tanto la Tierra no se dibujaba (parpadeo).
+ * La Tierra es una primitiva propia que se crea una vez; en cada fotograma solo se mueve su `modelMatrix`.
+ * - Con una entidad y una `ConstantPositionProperty` nueva por paso, Cesium reconstruía el elipsoide de forma
+ *   asíncrona y mientras tanto no lo dibujaba (parpadeo).
+ * - Con una entidad y posición de callback (geometría dinámica), Cesium 1.147 crea un `Material` nuevo en cada
+ *   fotograma (`DynamicEllipsoidGeometryUpdater` nunca guarda el que crea). La textura se sube a la GPU un
+ *   fotograma después de pedirla, así que nunca llegaba: la Tierra se veía blanca y lisa en cualquier GPU.
  */
 export class CelestialSky {
   private sunBillboards = new BillboardCollection()
@@ -130,7 +160,7 @@ export class CelestialSky {
   private lastFrame = 0
   private moveListeners: (() => void)[] = []
   private earthDistanceM = EARTH_MEAN_DISTANCE_M
-  private earth: Entity
+  private earth: Primitive
   private showSun = true
   private showEarth = true
 
@@ -146,20 +176,26 @@ export class CelestialSky {
     // Tamaño en píxeles recalculado por fotograma: conserva el tamaño angular real (0.53°)
     // con cualquier FOV o resolución. (El modo `sizeInMeters` se renderizaba mal a 1e8–1e9 m.)
     viewer.scene.preRender.addEventListener(() => this.onFrame())
-    this.earth = viewer.entities.add({
-      id: 'sky:earth',
-      position: new CallbackPositionProperty((_t, result) => this.shownPosition('earth', result ?? new Cartesian3()), false),
-      orientation: new CallbackProperty(() => this.earthOrientation(), false),
-      ellipsoid: {
-        radii: new Cartesian3(EARTH_RADIUS_M, EARTH_RADIUS_M, EARTH_RADIUS_M),
-        material: Color.fromCssColorString('#1d4e89'), // hasta que cargue la textura
-        slicePartitions: 48,
-        stackPartitions: 48,
-      },
-    })
+    this.earth = viewer.scene.primitives.add(
+      new Primitive({
+        geometryInstances: new GeometryInstance({
+          geometry: new EllipsoidGeometry({
+            radii: new Cartesian3(EARTH_RADIUS_M, EARTH_RADIUS_M, EARTH_RADIUS_M),
+            slicePartitions: 48,
+            stackPartitions: 48,
+            vertexFormat: MaterialAppearance.MaterialSupport.TEXTURED.vertexFormat,
+          }),
+        }),
+        appearance: new MaterialAppearance({
+          material: Material.fromType('Color', { color: Color.fromCssColorString('#1d4e89') }), // hasta que cargue la textura
+          closed: true,
+        }),
+        asynchronous: false,
+      }),
+    )
     loadEarthTexture()
       .then((canvas) => {
-        if (this.earth.ellipsoid) this.earth.ellipsoid.material = new ImageMaterialProperty({ image: canvas })
+        this.earth.appearance.material = earthMaterial(canvas)
         this.viewer.scene.requestRender()
       })
       .catch(() => {
@@ -229,10 +265,12 @@ export class CelestialSky {
 
   // Orienta la textura para que el hemisferio con las Américas (lon −75°) mire hacia la Luna.
   // La rotación y orientación de la Tierra son ilustrativas, no efeméride.
-  private earthOrientation(): Quaternion {
+  private updateEarthMatrix() {
     const faceAz = Math.atan2(-this.earthShown.y, -this.earthShown.x)
     const theta = faceAz - (-75 * Math.PI) / 180 - Math.PI
-    return Quaternion.fromRotationMatrix(Matrix3.fromRotationZ(theta))
+    const position = this.shownPosition('earth', new Cartesian3())!
+    // Se escribe sobre la misma matriz: Primitive detecta el cambio de valor y mueve la Tierra sin reconstruirla
+    Matrix4.fromRotationTranslation(Matrix3.fromRotationZ(theta, new Matrix3()), position, this.earth.modelMatrix)
   }
 
   private onFrame() {
@@ -244,13 +282,15 @@ export class CelestialSky {
       moved = true
       this.sunBillboard.position = this.shownPosition('sun', new Cartesian3())!
     }
-    if (glide(this.earthShown, this.earthDir, dt)) moved = true // la Tierra lee su posición del callback
+    if (glide(this.earthShown, this.earthDir, dt)) moved = true
+    this.updateEarthMatrix()
     if (moved) this.moveListeners.forEach((fn) => fn())
     this.updateSunSize()
   }
 
   private refresh() {
     this.earth.show = this.showEarth
+    this.updateEarthMatrix()
     const sunPos = this.shownPosition('sun', new Cartesian3())
     this.sunBillboard.show = this.showSun && !!sunPos
     if (sunPos) this.sunBillboard.position = sunPos
