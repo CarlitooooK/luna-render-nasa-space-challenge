@@ -1,5 +1,4 @@
 import {
-  BoundingSphere,
   Cartesian3,
   Cartographic,
   HeadingPitchRange,
@@ -94,6 +93,7 @@ export class LandingScene {
   private landedT = 0
   private astronautShown = false
   private gliding = false
+  private glide: { t: number; dur: number; startPos: Cartesian3; endPos: Cartesian3; startTarget: Cartesian3; endTarget: Cartesian3; hpr: HeadingPitchRange } | null = null
   private token = 0
   private ready = false // hay punto de contacto calculado
   private east = Cartesian3.UNIT_X
@@ -202,6 +202,7 @@ export class LandingScene {
   stop() {
     if (!this.active) return
     this.token++
+    this.glide = null
     this.active = false
     this.ready = false
     this.engineOn = false
@@ -235,7 +236,8 @@ export class LandingScene {
     } else if (this.phase === 'landed') {
       this.landedT += dt
       if (this.landedT > 3.5) this.dustAt = null
-      if (!this.gliding && this.landedT > 1.6) void this.finish()
+      if (!this.gliding && this.landedT > 2.4) void this.finish()
+      this.stepGlide(dt)
     }
   }
 
@@ -307,17 +309,39 @@ export class LandingScene {
       Cartesian3.multiplyByScalar(this.up, 2.5, new Cartesian3()),
       new Cartesian3(),
     )
-    this.host.viewer.camera.flyToBoundingSphere(new BoundingSphere(mid, 5), {
-      offset: new HeadingPitchRange(this.azimuth, CesiumMath.toRadians(-14), 40),
-      duration: 3.5,
-      complete: () => {
-        if (token !== this.token) return
-        // la cámara queda orbitable alrededor de la escena
-        this.host.viewer.camera.lookAt(mid, new HeadingPitchRange(this.azimuth, CesiumMath.toRadians(-14), 40))
-        this.host.lockCamera()
-        this.setPhase('done')
-      },
-    })
+    // Planeo propio en lugar de `flyToBoundingSphere`: Cesium sube la cámara en arco (hasta ~2 km en las pruebas)
+    // y el módulo se perdía de vista a mitad del vuelo. Aquí la cámara se acerca en línea recta y suave, y la mirada
+    // pasa del módulo al punto medio entre módulo y astronauta.
+    const cam = this.host.viewer.camera
+    const startPos = Cartesian3.clone(cam.positionWC)
+    const startDir = Cartesian3.clone(cam.directionWC)
+    const startUp = Cartesian3.clone(cam.upWC)
+    const hpr = new HeadingPitchRange(this.azimuth, CesiumMath.toRadians(-14), 40)
+    cam.lookAt(mid, hpr)
+    const endPos = Cartesian3.clone(cam.positionWC)
+    cam.lookAtTransform(Matrix4.IDENTITY)
+    cam.setView({ destination: startPos, orientation: { direction: startDir, up: startUp } })
+    this.glide = { t: 0, dur: 5, startPos, endPos, startTarget: this.landerPosition() ?? this.site0, endTarget: mid, hpr }
+  }
+
+  /** Un paso del planeo final de cámara (se llama desde `update`). */
+  private stepGlide(dt: number) {
+    const g = this.glide
+    if (!g) return
+    g.t += dt
+    const u = Math.min(g.t / g.dur, 1)
+    const k = u * u * (3 - 2 * u)
+    const pos = Cartesian3.lerp(g.startPos, g.endPos, k, new Cartesian3())
+    const target = Cartesian3.lerp(g.startTarget, g.endTarget, k, new Cartesian3())
+    const d = Cartesian3.normalize(Cartesian3.subtract(target, pos, new Cartesian3()), new Cartesian3())
+    this.host.viewer.camera.setView({ destination: pos, orientation: { direction: d, up: this.upFor(pos, d) } })
+    if (u >= 1) {
+      this.glide = null
+      // la cámara queda orbitable alrededor de la escena
+      this.host.viewer.camera.lookAt(g.endTarget, g.hpr)
+      this.host.lockCamera()
+      this.setPhase('done')
+    }
   }
 
   private trackLander() {

@@ -177,10 +177,12 @@ export class LunarGlobe {
         this.viewer.scene.globe.enableLighting = false
         this.siteEntities.forEach((e) => (e.show = false))
         this.applyLighting()
+        this.refreshCloseCamera(true) // begin() corre antes de que la vista marque `active`
       },
       end: () => {
         this.setGroundBrightness(1)
         this.applyLighting()
+        this.refreshCloseCamera()
         this.siteEntities.forEach((e) => (e.show = true))
       },
       setGroundBrightness: (f) => this.setGroundBrightness(f),
@@ -201,10 +203,12 @@ export class LunarGlobe {
         this.viewer.scene.globe.enableLighting = false
         // en la escena local no hay pines de sitios
         this.siteEntities.forEach((e) => (e.show = false))
+        this.refreshCloseCamera(true)
       },
       end: () => {
         this.stopFollow()
         this.applyLighting()
+        this.refreshCloseCamera()
         this.siteEntities.forEach((e) => (e.show = true))
       },
       phase: (phase) => this.emit('scenePhase', { phase }),
@@ -425,6 +429,16 @@ export class LunarGlobe {
       }))
     }
     this.viewer.scene.requestRender()
+  }
+
+  /**
+   * El control de cámara no deja acercarse a menos de 1 km del suelo (útil en la vista global). En la escena de
+   * alunizaje y en la vista de horizonte la cámara está a metros: con ese límite, al dejar de fijarla cada
+   * fotograma, Cesium la subía hasta 1 km y el módulo se veía como un punto o desaparecía.
+   */
+  private refreshCloseCamera(starting = false) {
+    const close = starting || this.scene.active || this.horizon.active
+    this.viewer.scene.screenSpaceCameraController.minimumZoomDistance = close ? 1 : 1_000
   }
 
   /** Pausa o reanuda el dibujado (el estado, la cámara y los mensajes siguen). */
