@@ -21,7 +21,7 @@ npm run build
 Orígenes permitidos: `VITE_ALLOWED_ORIGINS` (lista separada por comas) o `?allowedOrigins=`. Por defecto `http://localhost:5173`. Los mensajes de otros orígenes se ignoran y nunca se responde a `'*'`.
 
 Host → globo:
-- `SET_SITES` (`LandingSite[]`, mismos campos que `/sites`; `status` GO/CAUTION/NO-GO colorea el pin), `SELECT_SITE {id?,lat,lon}`, `RESET`.
+- `SET_SITES` (`LandingSite[]`, mismos campos que `/sites`; `status` GO/CAUTION/NO-GO colorea el pin), `SELECT_SITE {id?,lat,lon}` (si cambia de sitio, la cámara se aleja, gira la Luna y baja al nuevo: ver "Cámara y gestos"), `RESET`, `RECENTER` (vista de la Luna completa a 9 000 km sobre el sitio elegido, sin quitar la selección; la Luna gira sola hasta la siguiente vista. Cierra la escena y el horizonte).
 - `SET_SUN_LOCAL {lat,lon,vector}` y `SET_EARTH_LOCAL {lat,lon,vector}`: aceptan `sun_vector_3d` / `earth_vector_3d` tal cual (convención D-008). Dibujan el Sol y la Tierra y encienden la iluminación solar.
 - `SET_PSR` (`psrs` de `GET /psr/nearby`, tal cual): polígonos sobre la superficie. La conversión polar→lat/lon usa el CRS de LOLA (D-012 del handoff).
 - `SET_TRAJECTORY`, `PLAY_ANIMATION`, `FOLLOW_TRAJECTORY {enabled}` (cámara que sigue al módulo).
@@ -31,7 +31,7 @@ Host → globo:
 - `PLAY_LANDING_SCENE {lat,lon,headingDeg?,startAltM?,durationS?,distanceM?,astronaut?}` y `STOP_LANDING_SCENE`: la escena de alunizaje (ver abajo).
 - `SET_VEHICLES {lander?: boolean, astronaut?: {lat,lon,headingDeg?} | null}` y `VIEW_VEHICLE {which: 'lander'|'astronaut', rangeM?}` (fase 3, ver abajo).
 - `LOOK_AT {body: 'sun'|'earth'}`, `VIEW_FROM_SURFACE {lat,lon,look?}` (cámara a 2 m del suelo real) y `SET_VIEW {lat,lon,altM,headingDeg?,pitchDeg?}`.
-- `SET_CONFIG` (rejilla, capas, `terrain`, `terrainExaggeration`, `showStars`, `showSun`, `showEarth`, `autoRotate`…).
+- `SET_CONFIG` (rejilla `showGrid`, capas `layers: {lolaShade}`, `terrain`, `terrainExaggeration`, `showStars`, `showSun`, `showEarth`, `autoRotate`…). La consola usa `showGrid` y `layers.lolaShade` para sus píldoras "Grid" y "Elevation".
 
 Globo → host: `HORIZON_PHASE {phase: 'arrival'|'ready'|'leaving'}`, `SCENE_ERROR {reason}`, `SCENE_PHASE {phase: 'arrival'|'descent'|'landed'|'done'}`, `SCENE_TELEMETRY {t,altM,vMps}` (ilustrativa), `READY`, `SITE_CLICKED`, `GLOBE_CLICKED`, `ANIMATION_COMPLETE`, `LOADING {pending}` (teselas en descarga; 0 = estable), `TRAJECTORY_PROGRESS {progress,lat,lon,altKm}` (≤10/s, para HUD).
 
@@ -52,8 +52,8 @@ Requiere servir `public/cesium` y definir `CESIUM_BASE_URL` (ver `vite.config.ts
 Pensada en `docs/ideas/lunar-landing-ui-ux-tdd.md` ("Lander POV", cámara a 2 m del suelo) y `docs/05-flujos.md` §5.2 ("la trayectoria aparente del Sol y la Tierra respecto a la silueta del relieve lunar"). `SHOW_HORIZON` baja la cámara de la esfera al suelo del sitio con un vuelo continuo de ~6 s; `EXIT_HORIZON` vuelve a la esfera, a 2 500 km sobre el sitio.
 - **Silueta:** un muro a 30 km con la altura de `horizon_profile` (elevación aparente, la misma del panel Horizon 360° de la consola). El terreno más cercano lo pinta el relieve del globo. Sol y Tierra pasan por detrás y se ocultan con la silueta, sin cálculo propio.
 - **Sol y Tierra:** posiciones de `SET_SUN_LOCAL` / `SET_EARTH_LOCAL` (vectores del paso). `SET_SKY_STATE` añade las etiquetas: en Simple, solo el nombre (y "behind the terrain" si está oculto); en Detailed, azimut, elevación y holgura sobre el terreno (`el − horizonEl`). Con 'N, E, S, W' sobre el horizonte.
-- **Mirar a la redonda:** arrastrar gira la cámara con el horizonte nivelado; sin zoom ni desplazamiento. Por defecto mira hacia el Sol.
-- **Brillo del suelo y de la silueta:** ILUSTRATIVO, atenuados según la holgura del Sol sobre el terreno (dato real); no usa `power_factor`, que asume un panel que sigue al Sol.
+- **Mirar a la redonda:** arrastrar (o dos dedos en el trackpad) gira la cámara; sin zoom ni desplazamiento. Por defecto mira hacia el Sol. El `look` de Cesium 1.147 gira sobre `camera.up` e ignora `constrainedAxis`, así que cada fotograma se recalcula `up` sobre la vertical del sitio: el horizonte no se inclina.
+- **Brillo del suelo y de la silueta:** ILUSTRATIVO, atenuados según la holgura del Sol sobre el terreno (dato real); no usa `power_factor`, que asume un panel que sigue al Sol. Sin Sol queda en penumbra (`NIGHT_FLOOR`, la mitad del brillo diurno), nunca en negro. Entre pasos del timeline cambia con un fundido de 350 ms; al llegar al suelo se aplica de golpe.
 - Si se envía otra vista (`SELECT_SITE`, `SET_VIEW`, la escena de alunizaje, `RESET`…), la vista de horizonte se cierra.
 - Con datos de muestra (mock) el cielo y el horizonte son sintéticos: el Sol nunca se pone. Rotular con `SET_DATA_MODE`.
 
@@ -102,6 +102,17 @@ Cómo usarla bien:
 - **Sol:** disco de 0.53° con halo. **Solo se dibuja si el host envía su dirección**; sin ella no hay Sol ni sombreado de la Luna (no se inventa una posición).
 - El globo **no calcula efemérides**: toda dirección viene de la API (D-002, D-006).
 - Distancias escaladas: el Sol real (1.5e11 m) queda fuera del plano lejano de Cesium; se coloca a 9e8 m con tamaño angular correcto.
+- **Movimiento entre pasos:** la consola manda un paso cada ~100 ms en Play. El Sol y la Tierra se deslizan hacia la dirección nueva (suavizado exponencial de 90 ms) en vez de saltar; un salto de más de 12° o un cambio de observador se aplica de golpe. Es presentación: la dirección final es la del backend. La luz de la escena sigue al Sol dibujado. La Tierra lee posición y orientación de propiedades de callback; con una propiedad nueva por paso, Cesium reconstruía el elipsoide y la Tierra parpadeaba.
+- **Occluder con la cámara bajo el radio de referencia:** Cesium descarta lo que la Luna tapa con una esfera de radio `minimumRadius + minimumTerrainHeight`. Mirando al cielo no hay teselas en pantalla y la esfera queda en 1 737 400 m. En sitios más bajos (Apollo 11 −1,9 km, Chang'e 4 −5,9 km) la cámara a ras de suelo queda dentro, y Cesium daba por oculto todo menos las estrellas. Con la cámara dentro de la esfera el globo quita el occluder (`dropOccluderWhenInside` en `LunarGlobe.ts`).
+
+## Cámara y gestos
+`src/trackpad.ts` atiende los eventos `wheel` antes que Cesium:
+- **Pellizco del trackpad** (macOS lo manda como `wheel` con `ctrlKey`) y Ctrl + rueda: zoom.
+- **Dos dedos:** mueven el globo en x e y sin cambiar la altura. En la vista de horizonte miran a la redonda.
+- **Rueda del ratón:** zoom, más suave por muesca. El zoom de rueda de Cesium 1.147 normaliza un vector cero si la rueda se usa en el centro del lienzo tras girar el globo, y el render se detenía para siempre. Por eso el zoom de Cesium queda en botón derecho y pellizco táctil (`zoomEventTypes`).
+- **Recuperación del render:** si Cesium detiene el bucle de dibujado por un error (y el globo no está en pausa), un vigilante de 1 s vuelve a la vista global y reanuda, hasta 5 veces por sesión. `showRenderLoopErrors` está apagado para que el error no tape el globo.
+- **Cambio de sitio (`SELECT_SITE`):** la cámara sube en arco (1,2 × la distancia entre sitios, entre 400 y 6 300 km de altura), gira la Luna y baja al nuevo en 2,5 a 4,5 s. Si ya está más alta, no hay arco.
+- **`RECENTER`:** la latitud del encuadre se acota a ±60° para que se vea la Luna entera.
 
 ## Capas
 `wac` (base, nivel 8) y `lolaShade` (elevación en color, nivel 5, opacidad configurable). Atribución NASA incluida vía créditos de Cesium ("Data attribution").
