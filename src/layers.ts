@@ -6,11 +6,12 @@ import {
   type ImageryLayer,
 } from 'cesium'
 import { MOON } from './moon'
+import { TREK_BASE } from './trek'
 import type { LayerId } from './types'
 
 // Teselas WMTS de NASA Moon Trek (EPSG:4326, 2×1 en nivel 0 = GeographicTilingScheme de Cesium;
 // {y} es fila desde el norte, igual que Cesium). CORS abierto (verificado).
-const TREK = 'https://trek.nasa.gov/tiles/Moon/EQ'
+const TREK = `${TREK_BASE}/Moon/EQ`
 const tileUrl = (layer: string, ext: string) =>
   `${TREK}/${layer}/1.0.0/default/default028mm/{z}/{y}/{x}.${ext}`
 

@@ -5,13 +5,13 @@ import {
   UrlTemplateImageryProvider,
 } from 'cesium'
 import { MOON, MOON_RADIUS_M } from './moon'
+import { TREK_BASE } from './trek'
 
 // La capa global WAC en proyección geográfica se abre en abanico cerca del polo (la fuente es polar y
 // se estira al pasar a lat/lon). Moon Trek publica el mosaico polar sur original en proyección
 // estereográfica polar (metros, ±1 095 930 m) y Cesium no lo acepta directo. Este proveedor lo
 // reproyecta, tesela por tesela, a la malla geográfica de Cesium.
-const POLAR_URL =
-  'https://trek.nasa.gov/tiles/Moon/SP/LRO_WAC_Mosaic_SPole60_100m_v02/1.0.0/default/default028mm'
+const POLAR_URL = `${TREK_BASE}/Moon/SP/LRO_WAC_Mosaic_SPole60_100m_v02/1.0.0/default/default028mm`
 const EXTENT_M = 1_095_930 // semilado del cuadrado polar (esquina superior izquierda en -E, +E)
 const POLAR_MAX_LEVEL = 5 // nivel 5 = 267 m/px; no hay niveles mayores
 const TILE = 256
