@@ -81,6 +81,20 @@ const PIN_HEIGHT_M = 200 // evita z-fighting con la superficie
 const AUTO_ROTATE_RAD_PER_S = 0.04
 const GLOBAL_VIEW_ALT_M = 9_000_000
 
+/**
+ * Vuelo de un sitio a otro: primero se aleja, la Luna gira bajo la cámara y luego baja al sitio nuevo. La altura
+ * máxima crece con el arco entre los dos puntos (≈ 1,2 × la distancia sobre la superficie), entre 400 km y la
+ * vista global. Desde lejos (la cámara ya está más alta que eso) no hay arco: Cesium baja directo.
+ */
+export function siteHopArc(from: Cartesian3, to: Cartesian3): { maximumHeightM: number | undefined; durationS: number } {
+  const angle = Cartesian3.angleBetween(from, to)
+  const R = MOON.maximumRadius
+  const camHeight = Cartesian3.magnitude(from) - R
+  const peak = Math.max(400_000, Math.min(GLOBAL_VIEW_ALT_M * 0.7, angle * R * 1.2))
+  if (camHeight >= peak * 0.8) return { maximumHeightM: undefined, durationS: 2.5 }
+  return { maximumHeightM: peak, durationS: Math.max(2.5, Math.min(4.5, 2.2 + angle * 1.6)) }
+}
+
 type Listener<K extends keyof LunarGlobeEvents> = (data: LunarGlobeEvents[K]) => void
 
 /**
@@ -323,9 +337,11 @@ export class LunarGlobe {
     this.refreshSites()
     this.flying = true
     const center = Cartesian3.fromDegrees(target.lon, target.lat, 0, MOON)
+    const arc = siteHopArc(this.viewer.camera.positionWC, center)
     this.viewer.camera.flyToBoundingSphere(new BoundingSphere(center, 1), {
       offset: new HeadingPitchRange(0, CesiumMath.toRadians(-90), SITE_VIEW_RANGE_M),
-      duration: 2.5,
+      duration: arc.durationS,
+      maximumHeight: arc.maximumHeightM,
       complete: () => (this.flying = false),
       cancel: () => (this.flying = false),
     })
