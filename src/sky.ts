@@ -137,14 +137,20 @@ export class CelestialSky {
 
   /** Dirección hacia el Sol en el marco fijo lunar (unitario). null = desconocida: el Sol no se dibuja. */
   setSun(dir: Cartesian3 | null) {
-    this.sunDir = dir ? Cartesian3.normalize(dir, new Cartesian3()) : null
+    const next = dir ? Cartesian3.normalize(dir, new Cartesian3()) : null
+    if (next && this.sunDir && Cartesian3.equalsEpsilon(next, this.sunDir, 1e-9)) return // sin cambios: no se rehace el dibujo
+    if (!next && !this.sunDir) return
+    this.sunDir = next
     this.refresh()
   }
 
   /** Dirección hacia la Tierra en el marco fijo lunar y el punto de observación (centro de la Luna por defecto). */
   setEarth(dir: Cartesian3 | null, observer: Cartesian3 = Cartesian3.ZERO, distanceM?: number) {
-    this.earthDistanceM = distanceM && distanceM > 0 ? distanceM : EARTH_MEAN_DISTANCE_M
-    this.earthDir = dir ? Cartesian3.normalize(dir, new Cartesian3()) : new Cartesian3(1, 0, 0)
+    const distance = distanceM && distanceM > 0 ? distanceM : EARTH_MEAN_DISTANCE_M
+    const nextDir = dir ? Cartesian3.normalize(dir, new Cartesian3()) : new Cartesian3(1, 0, 0)
+    if (distance === this.earthDistanceM && Cartesian3.equalsEpsilon(nextDir, this.earthDir, 1e-9) && Cartesian3.equals(observer, this.earthObserver)) return
+    this.earthDistanceM = distance
+    this.earthDir = nextDir
     this.earthObserver = observer
     this.refresh()
   }

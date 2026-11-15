@@ -93,6 +93,8 @@ export type GlobeInboundMessage =
   /** Marcador del pin libre (clic en el globo). `null` lo quita. */
   | { type: 'SET_CUSTOM_PIN'; payload: CustomPin | null }
   /** Detiene (`true`) o reanuda (`false`) el dibujado. Para cuando la consola tapa el globo con otra escena. */
+  /** URL base de la API (`.../api/v1`): el globo pide `GET /terrain/tiles` ahí para el relieve y el polo sur. */
+  | { type: 'SET_TERRAIN_SOURCE'; payload: { baseUrl: string } }
   | { type: 'SET_PAUSED'; payload: { paused: boolean } }
   | { type: 'SET_HORIZON_DETAIL'; payload: { detailed: boolean } }
   /** Vista de horizonte (Lander POV): baja de la esfera al suelo del sitio. */

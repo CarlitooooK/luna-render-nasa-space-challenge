@@ -7,6 +7,7 @@ import {
   type TerrainProvider,
 } from 'cesium'
 import { MOON } from './moon'
+import { API_TILE_MAX_LEVEL, fetchTerrarium } from './terrarium'
 
 // Relieve global desde las teselas DEM de NASA Moon Trek (LOLA, 128 ppd, referido a la esfera de
 // 1 737 400 m, la misma de Ellipsoid.MOON). Las teselas son PNG de 8 bits: el valor (DN) es una
@@ -84,16 +85,20 @@ function sample(t: Float32Array, px: number, py: number): number {
 }
 
 /** Terreno global de la Luna. Niveles >5 se interpolan desde el nivel 5 (no hay más detalle gratuito). */
-export function createMoonTerrain(): TerrainProvider {
+export function createMoonTerrain(apiBase?: string): TerrainProvider {
+  // Con la URL del backend, el relieve sale de sus teselas Terrarium (LOLA, 40 m/px en el polo, niveles 0 a 9) en
+  // metros reales: sin la calibración de 8 bits ni el suavizado. Sin ella, queda el DEM de Moon Trek.
+  const fetchTile = apiBase ? (lv: number, row: number, col: number) => fetchTerrarium(apiBase, lv, row, col) : fetchDemTile
+  const maxLevel = apiBase ? API_TILE_MAX_LEVEL : DEM_MAX_LEVEL
   return new CustomHeightmapTerrainProvider({
     width: GRID,
     height: GRID,
     tilingScheme: new GeographicTilingScheme({ ellipsoid: MOON }),
-    credit: new Credit('NASA/GSFC/MIT — LRO LOLA DEM (via NASA Moon Trek)'),
+    credit: new Credit(apiBase ? 'NASA/GSFC/MIT — LRO LOLA DEM (via Lunar Navigator API)' : 'NASA/GSFC/MIT — LRO LOLA DEM (via NASA Moon Trek)'),
     callback: async (x: number, y: number, level: number) => {
-      const lv = Math.min(level, DEM_MAX_LEVEL)
+      const lv = Math.min(level, maxLevel)
       const shift = level - lv
-      const dem = await fetchDemTile(lv, y >> shift, x >> shift)
+      const dem = await fetchTile(lv, y >> shift, x >> shift)
       const out = new Float32Array(GRID * GRID)
       if (!dem) return out // sin red: terreno plano en esa tesela
       const span = 2 ** shift

@@ -32,6 +32,8 @@ import { CelestialSky, FAR_PLANE_M, createSkyBox } from './sky'
 import { polarSouthToLatLon } from './geo'
 import { createMoonTerrain, groundHeight, groundHeights } from './terrain'
 import { PolarSouthImageryProvider } from './polar'
+import { HillshadeImageryProvider } from './hillshade'
+import { fetchTerrarium, normalizeApiBase } from './terrarium'
 import { Vehicles } from './vehicles'
 import { LandingScene, type LandingSceneOptions } from './landingScene'
 import { HorizonView, type HorizonPoint, type HorizonViewOptions, type SkyState } from './horizonView'
@@ -105,6 +107,8 @@ export class LunarGlobe {
   private moonTerrain = createMoonTerrain()
   private flatTerrain = new EllipsoidTerrainProvider({ ellipsoid: MOON })
   private polarLayer: ImageryLayer | null = null
+  private hillshadeLayer: ImageryLayer | null = null
+  private apiBase: string | null = null
   private vehicles!: Vehicles
   private scene!: LandingScene
   private horizon!: HorizonView
@@ -118,6 +122,7 @@ export class LunarGlobe {
   private followHeadingDeg = 0
   private maxAltKm = 0
   private psrEntities: Entity[] = []
+  private sceneLight: DirectionalLight | null = null
   private pinEntities: Entity[] = []
   private customEntity: Entity | null = null
   private trajectoryData: TrajectoryPoint[] = []
@@ -215,13 +220,12 @@ export class LunarGlobe {
       error: (reason) => this.emit('sceneError', { reason }),
       lockCamera: () => (this.camLocked = true),
       setKeyLight: (v) => {
-        const light = this.viewer.scene
         if (!v) {
           this.applyLighting()
           return
         }
         const travel = Cartesian3.negate(Cartesian3.normalize(v, new Cartesian3()), new Cartesian3())
-        light.light = new DirectionalLight({ direction: travel, intensity: 2.4 })
+        this.setSceneLight(travel, 2.4)
       },
     })
     this.sky.setVisible(this.config.showSun, this.config.showEarth)
@@ -441,6 +445,29 @@ export class LunarGlobe {
     this.viewer.scene.screenSpaceCameraController.minimumZoomDistance = close ? 1 : 1_000
   }
 
+  /**
+   * Fuente de relieve del backend (`GET /terrain/tiles`, contrato v1.3). La consola pasa la URL base de la API: el
+   * globo no la conoce por sí solo. Con ella el terreno usa las teselas LOLA reales (40 m/px en el polo) y el polo
+   * sur se dibuja como relieve sombreado, en lugar del mosaico WAC de 267 m/px con abanico.
+   */
+  async setTerrainSource(url: string) {
+    const base = normalizeApiBase(url)
+    if (!base || base === this.apiBase || this.disposed) return
+    // Un backend sin `/terrain/tiles` (anterior a v1.3) o caído: se sigue con Moon Trek, sin romper nada
+    if (!(await fetchTerrarium(base, 0, 0, 0)) || this.disposed) return
+    this.apiBase = base
+    this.moonTerrain = createMoonTerrain(base)
+    if (this.config.terrain) this.viewer.terrainProvider = this.moonTerrain
+    const { imageryLayers } = this.viewer
+    if (this.hillshadeLayer) imageryLayers.remove(this.hillshadeLayer)
+    if (this.config.polarFix) {
+      this.hillshadeLayer = imageryLayers.addImageryProvider(new HillshadeImageryProvider(base), 1)
+      this.hillshadeLayer.show = this.config.layers.wac ?? false
+      if (this.polarLayer) this.polarLayer.show = false
+    }
+    this.viewer.scene.requestRender()
+  }
+
   /** Pausa o reanuda el dibujado (el estado, la cámara y los mensajes siguen). */
   setPaused(paused: boolean) {
     if (this.disposed) return
@@ -540,7 +567,17 @@ export class LunarGlobe {
             polygon: {
               // sin `height`: Cesium lo dibuja pegado al terreno
               hierarchy: new PolygonHierarchy(outer, holes.map((h) => new PolygonHierarchy(h))),
-              material: Color.fromCssColorString('#3b82f6').withAlpha(0.4),
+              material: Color.fromCssColorString('#3b82f6').withAlpha(0.2),
+            },
+          }),
+          // Contorno fino: el relleno solo no deja ver el terreno ni dónde termina la sombra permanente
+          entities.add({
+            name: `${item.name ?? `PSR ${item.gid}`} (outline)`,
+            polyline: {
+              positions: [...outer, outer[0]],
+              width: 1.5,
+              clampToGround: true,
+              material: Color.fromCssColorString('#93c5fd').withAlpha(0.85),
             },
           }),
         )
@@ -716,7 +753,8 @@ export class LunarGlobe {
           }
         }
       }
-      if (id === 'wac' && this.polarLayer) this.polarLayer.show = wanted
+      if (id === 'wac' && this.polarLayer) this.polarLayer.show = wanted && !this.hillshadeLayer
+      if (id === 'wac' && this.hillshadeLayer) this.hillshadeLayer.show = wanted
       if (id === 'wac' && this.detailLayer) this.detailLayer.show = wanted
       if (layer) {
         layer.show = wanted
@@ -762,6 +800,21 @@ export class LunarGlobe {
     }
   }
 
+  /**
+   * Orienta la luz de la escena. Se reutiliza UNA luz y solo se cambia su dirección: reasignar `scene.light` con una
+   * luz nueva en cada actualización del cielo (hasta ~6 veces por segundo con el scrubber en Play) hacía que
+   * Cesium rehiciera la iluminación de los modelos y el módulo y la Tierra parpadearan o se vieran pixelados.
+   */
+  private setSceneLight(direction: Cartesian3, intensity = 2) {
+    const { scene } = this.viewer
+    if (this.sceneLight && scene.light === this.sceneLight && this.sceneLight.intensity === intensity) {
+      if (!Cartesian3.equalsEpsilon(this.sceneLight.direction, direction, 1e-9)) Cartesian3.clone(direction, this.sceneLight.direction)
+      return
+    }
+    this.sceneLight = new DirectionalLight({ direction: Cartesian3.clone(direction), intensity })
+    scene.light = this.sceneLight
+  }
+
   private applyLighting() {
     const { scene } = this.viewer
     // En plena escena la luz es la de la escena: el Sol solo reorienta su azimut y el suelo no se sombrea
@@ -772,7 +825,7 @@ export class LunarGlobe {
       const travel = sunVec
         ? Cartesian3.negate(Cartesian3.normalize(sunVec, new Cartesian3()), new Cartesian3())
         : Cartesian3.clone(this.sky.direction('earth') ?? new Cartesian3(1, 0, 0))
-      scene.light = new DirectionalLight({ direction: Cartesian3.normalize(travel, travel) })
+      this.setSceneLight(Cartesian3.normalize(travel, travel))
       scene.globe.enableLighting = false
       return
     }
@@ -792,7 +845,7 @@ export class LunarGlobe {
       ? Cartesian3.negate(sunVec, new Cartesian3())
       : Cartesian3.clone(this.sky.direction('earth') ?? new Cartesian3(1, 0, 0))
     Cartesian3.normalize(travel, travel)
-    scene.light = new DirectionalLight({ direction: travel })
+    this.setSceneLight(travel)
     scene.globe.enableLighting = !!sunVec
   }
 
