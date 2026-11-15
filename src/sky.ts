@@ -97,6 +97,7 @@ export class CelestialSky {
   private sunDir: Cartesian3 | null = null
   private earthDir = new Cartesian3(1, 0, 0) // posición media: la Tierra está sobre lon 0°, lat 0° (±7° de libración)
   private earthObserver = Cartesian3.ZERO
+  private earthDistanceM = EARTH_MEAN_DISTANCE_M
   private earth: Entity
   private showSun = true
   private showEarth = true
@@ -141,7 +142,8 @@ export class CelestialSky {
   }
 
   /** Dirección hacia la Tierra en el marco fijo lunar y el punto de observación (centro de la Luna por defecto). */
-  setEarth(dir: Cartesian3 | null, observer: Cartesian3 = Cartesian3.ZERO) {
+  setEarth(dir: Cartesian3 | null, observer: Cartesian3 = Cartesian3.ZERO, distanceM?: number) {
+    this.earthDistanceM = distanceM && distanceM > 0 ? distanceM : EARTH_MEAN_DISTANCE_M
     this.earthDir = dir ? Cartesian3.normalize(dir, new Cartesian3()) : new Cartesian3(1, 0, 0)
     this.earthObserver = observer
     this.refresh()
@@ -162,7 +164,7 @@ export class CelestialSky {
     if (body === 'earth') {
       return Cartesian3.add(
         this.earthObserver,
-        Cartesian3.multiplyByScalar(this.earthDir, EARTH_MEAN_DISTANCE_M, new Cartesian3()),
+        Cartesian3.multiplyByScalar(this.earthDir, this.earthDistanceM, new Cartesian3()),
         new Cartesian3(),
       )
     }

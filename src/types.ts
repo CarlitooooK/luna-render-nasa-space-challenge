@@ -46,6 +46,9 @@ export interface PsrItem {
 }
 
 export type SkyBody = 'sun' | 'earth'
+/** Pin de un escenario de Compare: `label` es la letra (A–E); `best` resalta el recomendado. */
+export interface ComparePin { id: string; label: string; lat: number; lon: number; status?: SiteStatus; best?: boolean }
+export interface CustomPin { lat: number; lon: number; label?: string }
 export interface SkyBodyPayload { az: number; el: number; horizonEl: number; visible: boolean }
 
 export type ScenePhase = 'arrival' | 'descent' | 'landed' | 'done'
@@ -83,6 +86,12 @@ export type GlobeInboundMessage =
   | { type: 'SET_HORIZON'; payload: { lat: number; lon: number; profile: { az_deg: number; horizon_el_deg: number }[] } }
   /** Cielo del paso actual del scrubber, tal cual `timeline[stepIndex]` (azimut, elevación, horizonte del terreno, visibilidad). */
   | { type: 'SET_SKY_STATE'; payload: { sun: SkyBodyPayload; earth: SkyBodyPayload } }
+  /** Sol y Tierra vistos desde el centro de la Luna (`GET /ephemeris`, marco fijo lunar, `direction` unitario). Sirve para la vista global sin sitio. */
+  | { type: 'SET_SKY_GLOBAL'; payload: { sun: { direction: [number, number, number] }; earth: { direction: [number, number, number]; distanceKm?: number } } }
+  /** Pines de los escenarios de Compare (A–E). Lista vacía los quita. */
+  | { type: 'SET_COMPARE_PINS'; payload: ComparePin[] }
+  /** Marcador del pin libre (clic en el globo). `null` lo quita. */
+  | { type: 'SET_CUSTOM_PIN'; payload: CustomPin | null }
   | { type: 'SET_HORIZON_DETAIL'; payload: { detailed: boolean } }
   /** Vista de horizonte (Lander POV): baja de la esfera al suelo del sitio. */
   | { type: 'SHOW_HORIZON'; payload: { lat: number; lon: number; headingDeg?: number } }

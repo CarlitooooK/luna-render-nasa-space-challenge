@@ -71,6 +71,19 @@ export function connectToHost(globe: LunarGlobe, allowedOrigins: string[]): () =
       case 'SET_SKY_STATE':
         if (msg.payload && isBody(msg.payload.sun) && isBody(msg.payload.earth)) globe.setSkyState({ sun: msg.payload.sun, earth: msg.payload.earth })
         break
+      case 'SET_SKY_GLOBAL': {
+        const p = msg.payload
+        if (p && isVec3(p.sun?.direction) && isVec3(p.earth?.direction))
+          globe.setSkyGlobal(p.sun.direction, p.earth.direction, isNum(p.earth.distanceKm) && p.earth.distanceKm > 0 ? p.earth.distanceKm : undefined)
+        break
+      }
+      case 'SET_COMPARE_PINS':
+        if (Array.isArray(msg.payload))
+          globe.setComparePins(msg.payload.filter((p) => p && typeof p.id === 'string' && typeof p.label === 'string' && p.label.length <= 4 && isLatLon(p)))
+        break
+      case 'SET_CUSTOM_PIN':
+        globe.setCustomPin(msg.payload === null ? null : isLatLon(msg.payload) ? msg.payload : null)
+        break
       case 'SET_HORIZON_DETAIL':
         if (typeof msg.payload?.detailed === 'boolean') globe.setHorizonDetailed(msg.payload.detailed)
         break

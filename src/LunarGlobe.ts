@@ -45,6 +45,8 @@ import type {
   PsrItem,
   SkyBody,
   TrajectoryPoint,
+  ComparePin,
+  CustomPin,
 } from './types'
 
 const DEFAULTS: Required<Omit<LunarGlobeConfig, 'sunDirection'>> & Pick<LunarGlobeConfig, 'sunDirection'> = {
@@ -116,6 +118,8 @@ export class LunarGlobe {
   private followHeadingDeg = 0
   private maxAltKm = 0
   private psrEntities: Entity[] = []
+  private pinEntities: Entity[] = []
+  private customEntity: Entity | null = null
   private trajectoryData: TrajectoryPoint[] = []
   private follow = false
   private lastProgressEmit = 0
@@ -371,6 +375,78 @@ export class LunarGlobe {
     const site = Cartesian3.fromDegrees(lon, lat, 0, MOON)
     this.sky.setEarth(this.localToFixed(lat, lon, v), site)
     this.applyLighting()
+  }
+
+  /** Sol y Tierra desde el centro de la Luna (`GET /ephemeris`), ya en el marco fijo lunar. Con distancia real a la Tierra si viene. */
+  setSkyGlobal(sun: [number, number, number], earth: [number, number, number], earthDistanceKm?: number) {
+    this.setSunDirection(sun)
+    this.sky.setEarth(new Cartesian3(earth[0], earth[1], earth[2]), Cartesian3.ZERO, earthDistanceKm ? earthDistanceKm * 1000 : undefined)
+    this.applyLighting()
+  }
+
+  /** Pines A–E de Compare. Escenarios que comparten lugar (mismo sitio, otra fecha) se agrupan en un pin con varias letras. */
+  setComparePins(pins: ComparePin[]) {
+    const { entities } = this.viewer
+    this.pinEntities.forEach((e) => entities.remove(e))
+    this.pinEntities = []
+    const groups = new Map<string, ComparePin[]>()
+    for (const p of pins) {
+      const k = `${p.lat.toFixed(5)},${p.lon.toFixed(5)}`
+      groups.set(k, [...(groups.get(k) ?? []), p])
+    }
+    for (const g of groups.values()) {
+      const best = g.some((p) => p.best)
+      // Mismo estado en todo el grupo: ese color. Estados distintos o ausentes: color neutro (no se elige uno por ellos)
+      const st = g.every((p) => p.status && p.status === g[0].status) ? g[0].status : undefined
+      const color = Color.fromCssColorString((st && STATUS_COLOR[st]) || '#e5e7eb')
+      this.pinEntities.push(entities.add({
+        id: `compare:${g.map((p) => p.id).join('+')}`,
+        position: Cartesian3.fromDegrees(g[0].lon, g[0].lat, PIN_HEIGHT_M * 2, MOON),
+        point: {
+          heightReference: HeightReference.RELATIVE_TO_GROUND,
+          pixelSize: best ? 24 : 18,
+          color,
+          outlineColor: best ? Color.WHITE : Color.BLACK.withAlpha(0.85),
+          outlineWidth: best ? 4 : 2,
+          disableDepthTestDistance: 0,
+        },
+        label: {
+          text: g.map((p) => p.label).join(' ') + (best ? ' · Best' : ''),
+          font: `bold ${best ? 14 : 12}px system-ui, sans-serif`,
+          style: LabelStyle.FILL_AND_OUTLINE,
+          outlineWidth: 3,
+          outlineColor: Color.BLACK,
+          fillColor: Color.WHITE,
+          verticalOrigin: VerticalOrigin.BOTTOM,
+          horizontalOrigin: HorizontalOrigin.CENTER,
+          heightReference: HeightReference.RELATIVE_TO_GROUND,
+          pixelOffset: new Cartesian2(0, best ? -16 : -13),
+        },
+      }))
+    }
+    this.viewer.scene.requestRender()
+  }
+
+  /** Marcador del pin libre elegido con un clic en el globo. */
+  setCustomPin(pin: CustomPin | null) {
+    const { entities } = this.viewer
+    if (this.customEntity) entities.remove(this.customEntity)
+    this.customEntity = null
+    if (pin) {
+      this.customEntity = entities.add({
+        id: 'custom-pin',
+        position: Cartesian3.fromDegrees(pin.lon, pin.lat, PIN_HEIGHT_M * 2, MOON),
+        point: { heightReference: HeightReference.RELATIVE_TO_GROUND, pixelSize: 12, color: Color.fromCssColorString(SELECTED_PIN), outlineColor: Color.WHITE, outlineWidth: 2 },
+        label: {
+          text: pin.label ?? 'Custom pin',
+          font: '12px system-ui, sans-serif', style: LabelStyle.FILL_AND_OUTLINE, outlineWidth: 3, outlineColor: Color.BLACK,
+          fillColor: Color.WHITE, verticalOrigin: VerticalOrigin.BOTTOM, horizontalOrigin: HorizontalOrigin.LEFT,
+          heightReference: HeightReference.RELATIVE_TO_GROUND, pixelOffset: new Cartesian2(10, -6),
+          distanceDisplayCondition: new DistanceDisplayCondition(0, 2_500_000),
+        },
+      })
+    }
+    this.viewer.scene.requestRender()
   }
 
   /** Orienta la cámara hacia el Sol o la Tierra sin moverla. El Sol solo si su dirección es conocida. */
