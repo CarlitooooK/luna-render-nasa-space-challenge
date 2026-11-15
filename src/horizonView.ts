@@ -100,7 +100,8 @@ export class HorizonView {
   private sky: SkyState | null = null
   private detailed = false
   private wall: Primitive | null = null
-  private entities: Entity[] = []
+  /** Rosa de los vientos (N, E, S, O). Aparte de las etiquetas: rehacer la rosa no debe borrar las del Sol y la Tierra. */
+  private compass: Entity[] = []
   private labels: { sun: Entity | null; earth: Entity | null } = { sun: null, earth: null }
   private token = 0
   private site0 = Cartesian3.ZERO
@@ -365,7 +366,7 @@ export class HorizonView {
     const { entities } = this.host.viewer
     this.clearCompass()
     for (const [name, az] of [['N', 0], ['E', 90], ['S', 180], ['W', 270]] as const) {
-      this.entities.push(
+      this.compass.push(
         entities.add({
           position: new ConstantPositionProperty(this.skyPoint(az, 0.4)),
           label: {
@@ -385,8 +386,8 @@ export class HorizonView {
   }
 
   private clearCompass() {
-    this.entities.forEach((e) => this.host.viewer.entities.remove(e))
-    this.entities = []
+    this.compass.forEach((e) => this.host.viewer.entities.remove(e))
+    this.compass = []
   }
 
   private labelText(name: string, b: SkyBodyState): string {
@@ -427,7 +428,6 @@ export class HorizonView {
           },
         })
         this.labels[key] = e
-        this.entities.push(e)
       } else if (e.label) {
         e.label.text = new ConstantProperty(text)
       }
@@ -439,6 +439,9 @@ export class HorizonView {
   private clearOverlays() {
     this.removeWall()
     this.clearCompass()
+    // Las etiquetas viven aparte de la rosa: si el cielo llega mientras show() espera la altura del suelo, se crean
+    // antes que la rosa, y rehacer la rosa las quitaba del visor sin soltarlas (la etiqueta del Sol no volvía)
+    for (const e of [this.labels.sun, this.labels.earth]) if (e) this.host.viewer.entities.remove(e)
     this.labels = { sun: null, earth: null }
   }
 
