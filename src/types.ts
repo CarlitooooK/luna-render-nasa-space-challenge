@@ -36,6 +36,8 @@ export interface LunarGlobeConfig {
   lolaOpacity?: number // opacidad de la capa de elevación 0..1 (default 0.5)
   /** Vector que apunta HACIA el Sol en el marco fijo lunar (X→lon 0°, Z→polo norte). null = sin iluminación. */
   sunDirection?: [number, number, number] | null
+  /** URL base de las teselas de terreno del backend (`<api>/terrain/tiles`, contrato v1.3). Con ella el globo usa el relieve LOLA real y dibuja el polo sur sombreado; si no llega o falla, sigue con Moon Trek. */
+  terrainTilesUrl?: string
 }
 
 /** Un PSR tal como lo devuelve GET /psr/nearby (geometría en metros estereográficos polares sur). */
@@ -93,8 +95,6 @@ export type GlobeInboundMessage =
   /** Marcador del pin libre (clic en el globo). `null` lo quita. */
   | { type: 'SET_CUSTOM_PIN'; payload: CustomPin | null }
   /** Detiene (`true`) o reanuda (`false`) el dibujado. Para cuando la consola tapa el globo con otra escena. */
-  /** URL base de la API (`.../api/v1`): el globo pide `GET /terrain/tiles` ahí para el relieve y el polo sur. */
-  | { type: 'SET_TERRAIN_SOURCE'; payload: { baseUrl: string } }
   | { type: 'SET_PAUSED'; payload: { paused: boolean } }
   | { type: 'SET_HORIZON_DETAIL'; payload: { detailed: boolean } }
   /** Vista de horizonte (Lander POV): baja de la esfera al suelo del sitio. */

@@ -1,3 +1,4 @@
+// `terrainTilesUrl` (por `SET_CONFIG`, P-010) es la URL base de las teselas: `<api>/terrain/tiles`.
 // Teselas de elevación del backend (`GET /api/v1/terrain/tiles/{z}/{row}/{col}.png`, contrato v1.3, §2.9):
 // PNG RGB de 256 × 256 muestras en centros de píxel, codificación Terrarium:
 //   elevación_m = R·256 + G + B/256 − 32768   (relativa a la esfera de 1 737 400 m, la misma de Ellipsoid.MOON)
@@ -44,8 +45,8 @@ async function download(url: string): Promise<Blob | null> {
   return null
 }
 
-/** Una URL base válida (http o https), sin barra final; `null` si no lo es. */
-export function normalizeApiBase(url: unknown): string | null {
+/** Una URL base de teselas válida (http o https), sin barra final; `null` si no lo es. */
+export function normalizeTilesUrl(url: unknown): string | null {
   if (typeof url !== 'string') return null
   try {
     const u = new URL(url)
@@ -66,7 +67,7 @@ export function fetchTerrarium(base: string, z: number, row: number, col: number
   if (hit) return hit
   const p = (async () => {
     try {
-      const blob = await download(`${base}/terrain/tiles/${z}/${row}/${col}.png`)
+      const blob = await download(`${base}/${z}/${row}/${col}.png`)
       if (!blob) {
         cache.delete(key) // un fallo no se recuerda: la próxima petición vuelve a intentarlo
         return null

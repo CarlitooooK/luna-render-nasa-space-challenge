@@ -33,7 +33,7 @@ import { polarSouthToLatLon } from './geo'
 import { createMoonTerrain, groundHeight, groundHeights } from './terrain'
 import { PolarSouthImageryProvider } from './polar'
 import { HillshadeImageryProvider } from './hillshade'
-import { fetchTerrarium, normalizeApiBase } from './terrarium'
+import { fetchTerrarium, normalizeTilesUrl } from './terrarium'
 import { Vehicles } from './vehicles'
 import { LandingScene, type LandingSceneOptions } from './landingScene'
 import { HorizonView, type HorizonPoint, type HorizonViewOptions, type SkyState } from './horizonView'
@@ -51,7 +51,7 @@ import type {
   CustomPin,
 } from './types'
 
-const DEFAULTS: Required<Omit<LunarGlobeConfig, 'sunDirection'>> & Pick<LunarGlobeConfig, 'sunDirection'> = {
+const DEFAULTS: Required<Omit<LunarGlobeConfig, 'sunDirection' | 'terrainTilesUrl'>> & Pick<LunarGlobeConfig, 'sunDirection' | 'terrainTilesUrl'> = {
   autoRotate: true,
   showGrid: false,
   gridStepDeg: 30,
@@ -108,7 +108,7 @@ export class LunarGlobe {
   private flatTerrain = new EllipsoidTerrainProvider({ ellipsoid: MOON })
   private polarLayer: ImageryLayer | null = null
   private hillshadeLayer: ImageryLayer | null = null
-  private apiBase: string | null = null
+  private apiBase: string | null = null // URL base de las teselas en uso
   private vehicles!: Vehicles
   private scene!: LandingScene
   private horizon!: HorizonView
@@ -272,6 +272,7 @@ export class LunarGlobe {
 
   // ─── API pública ────────────────────────────────────────────────────────
   setConfig(partial: LunarGlobeConfig) {
+    if (partial.terrainTilesUrl !== undefined) void this.setTerrainSource(partial.terrainTilesUrl)
     const prev = this.config
     this.config = { ...prev, ...partial, layers: { ...prev.layers, ...partial.layers } }
     this.applyLayers()
@@ -446,12 +447,12 @@ export class LunarGlobe {
   }
 
   /**
-   * Fuente de relieve del backend (`GET /terrain/tiles`, contrato v1.3). La consola pasa la URL base de la API: el
-   * globo no la conoce por sí solo. Con ella el terreno usa las teselas LOLA reales (40 m/px en el polo) y el polo
+   * Fuente de relieve del backend (`GET /terrain/tiles`, contrato v1.3). La consola pasa la URL base de las teselas
+   * (`terrainTilesUrl` en `SET_CONFIG`, P-010): el globo no conoce la API por sí solo. Con ella el terreno usa las teselas LOLA reales (40 m/px en el polo) y el polo
    * sur se dibuja como relieve sombreado, en lugar del mosaico WAC de 267 m/px con abanico.
    */
   async setTerrainSource(url: string) {
-    const base = normalizeApiBase(url)
+    const base = normalizeTilesUrl(url)
     if (!base || base === this.apiBase || this.disposed) return
     // Un backend sin `/terrain/tiles` (anterior a v1.3) o caído: se sigue con Moon Trek, sin romper nada
     if (!(await fetchTerrarium(base, 0, 0, 0)) || this.disposed) return

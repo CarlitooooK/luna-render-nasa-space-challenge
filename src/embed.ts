@@ -84,9 +84,6 @@ export function connectToHost(globe: LunarGlobe, allowedOrigins: string[]): () =
       case 'SET_CUSTOM_PIN':
         globe.setCustomPin(msg.payload === null ? null : isLatLon(msg.payload) ? msg.payload : null)
         break
-      case 'SET_TERRAIN_SOURCE':
-        if (typeof msg.payload?.baseUrl === 'string') void globe.setTerrainSource(msg.payload.baseUrl)
-        break
       case 'SET_PAUSED':
         if (typeof msg.payload?.paused === 'boolean') globe.setPaused(msg.payload.paused)
         break
