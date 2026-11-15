@@ -74,9 +74,11 @@ export class HillshadeImageryProvider extends UrlTemplateImageryProvider {
  * cálculo en el navegador. Luz y exageración: las del globo (luz fija del backend por defecto). Se funde con el mosaico
  * entre −83° y −85°. Cesium limita y reintenta estas peticiones por sí mismo.
  */
-export function createServerHillshade(base: string) {
+export function createServerHillshade(base: string, light?: { lon: number; lat: number }) {
+  // `light_lon`/`light_lat`: punto de la Luna donde la luz cae a plomo (el punto subsolar). Sin ellos, la luz por defecto del backend.
+  const lightQuery = light ? `&light_lon=${light.lon}&light_lat=${light.lat}` : ''
   return new UrlTemplateImageryProvider({
-    url: `${base}/hillshade/{z}/{y}/{x}.png?exaggeration=${EXAGGERATION}&fade_start_lat=${POLAR_FADE_START_DEG}&fade_end_lat=${POLAR_FADE_END_DEG}`,
+    url: `${base}/hillshade/{z}/{y}/{x}.png?exaggeration=${EXAGGERATION}&fade_start_lat=${POLAR_FADE_START_DEG}&fade_end_lat=${POLAR_FADE_END_DEG}${lightQuery}`,
     tilingScheme: new GeographicTilingScheme({ ellipsoid: MOON }),
     rectangle: Rectangle.fromDegrees(-180, -90, 180, POLAR_FADE_START_DEG),
     maximumLevel: HILLSHADE_MAX_LEVEL,

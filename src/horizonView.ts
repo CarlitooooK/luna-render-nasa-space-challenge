@@ -45,6 +45,8 @@ export interface HorizonHost {
   end(): void
   /** Multiplicador de brillo de la imagen del suelo (1 = sin cambio). */
   setGroundBrightness(f: number): void
+  /** El Sol del paso actual cambió: el anfitrión puede reiluminar el suelo con él. */
+  sunChanged?(): void
   phase(p: HorizonPhase): void
 }
 
@@ -53,8 +55,10 @@ export interface HorizonHost {
 const WALL_DISTANCE_M = 30_000
 const EYE_HEIGHT_M = 2
 // Color de la silueta a pleno día; se oscurece con el mismo factor que la imagen del suelo
-const WALL_COLOR = Color.fromCssColorString('#625c52')
+const WALL_COLOR = Color.fromCssColorString('#66645f')
 const WALL_ID = 'horizon-wall'
+// La silueta se parte en sectores para sombrearla según de dónde viene el Sol (ILUSTRATIVO, ver `sectorLight`)
+const WALL_SECTORS = 48
 const ARRIVAL_S = 6
 const EXIT_ALTITUDE_M = 2_500_000
 
@@ -76,6 +80,18 @@ export function groundBrightness(sun: SkyBodyState | undefined): number {
 }
 
 /**
+ * Luz ILUSTRATIVA de un sector de la silueta (0..1) según el azimut del Sol. Una ladera lejana mira hacia el
+ * observador, así que se ilumina cuando el Sol queda a su espalda y queda a contraluz cuando está de frente.
+ * Solo usa el azimut del Sol que manda el backend; no es una simulación de la ladera real.
+ */
+export function sectorLight(sectorAzDeg: number, sunAzDeg: number | undefined): number {
+  if (sunAzDeg === undefined) return 1
+  const facing = (sectorAzDeg + 180) * (Math.PI / 180)
+  const sun = sunAzDeg * (Math.PI / 180)
+  return 0.3 + 0.7 * Math.max(0, Math.cos(sun - facing))
+}
+
+/**
  * Vista de horizonte (Lander POV de `docs/ideas/lunar-landing-ui-ux-tdd.md`, `docs/05-flujos.md` §5.2):
  * la cámara baja desde la esfera hasta el suelo del sitio elegido y mira el cielo sobre la silueta real del
  * horizonte (`horizon_profile`). Al mover el scrubber, Sol y Tierra se desplazan contra esa silueta y se ven
@@ -90,6 +106,7 @@ export class HorizonView {
   private sky: SkyState | null = null
   private detailed = false
   private wall: Primitive | null = null
+  private sectorAz = new Map<string, number>()
   private entities: Entity[] = []
   private labels: { sun: Entity | null; earth: Entity | null } = { sun: null, earth: null }
   private token = 0
@@ -101,6 +118,16 @@ export class HorizonView {
   private saved: Record<string, unknown> | null = null
 
   constructor(private host: HorizonHost) {}
+
+  /** Azimut del Sol del paso actual (grados desde el norte hacia el este), si se conoce. */
+  get sunAzimuthDeg(): number | undefined {
+    return this.sky?.sun.az
+  }
+
+  /** Sitio de la vista (lat/lon en grados), si hay perfil de horizonte. */
+  get siteLatLon(): { lat: number; lon: number } | null {
+    return this.profileFor
+  }
 
   /** Perfil de horizonte (`evaluate.horizon_profile`). Si la vista está activa, se redibuja la silueta. */
   setProfile(lat: number, lon: number, profile: HorizonPoint[]) {
@@ -122,6 +149,7 @@ export class HorizonView {
     this.host.setGroundBrightness(f)
     this.tintWall(f)
     this.refreshLabels()
+    this.host.sunChanged?.()
   }
 
   async show(o: HorizonViewOptions) {
@@ -130,6 +158,7 @@ export class HorizonView {
     this.host.begin()
     this.active = true
     this.setPhase('arrival')
+    this.host.sunChanged?.() // el suelo se ilumina con el Sol del paso desde el principio
 
     const ground = await this.host.groundHeight(o.lat, o.lon)
     if (token !== this.token) return
@@ -301,32 +330,47 @@ export class HorizonView {
       top.push(c.height)
       bottom.push(c.height - 4000)
     }
-    const geometry = WallGeometry.createGeometry(
-      new WallGeometry({ positions, maximumHeights: top, minimumHeights: bottom, vertexFormat: PerInstanceColorAppearance.FLAT_VERTEX_FORMAT }),
-    )
-    if (!geometry) return
+    // Un sector por cada 7,5° de azimut, con su propio color (ver `sectorLight`)
+    const per = Math.ceil((pts.length - 1) / WALL_SECTORS)
+    const instances: GeometryInstance[] = []
+    for (let k = 0; k * per < pts.length - 1; k++) {
+      const from = k * per
+      const to = Math.min(pts.length - 1, from + per)
+      const geometry = WallGeometry.createGeometry(
+        new WallGeometry({
+          positions: positions.slice(from, to + 1), maximumHeights: top.slice(from, to + 1), minimumHeights: bottom.slice(from, to + 1),
+          vertexFormat: PerInstanceColorAppearance.FLAT_VERTEX_FORMAT,
+        }),
+      )
+      if (!geometry) continue
+      const az = (pts[from].az_deg + pts[to].az_deg) / 2
+      this.sectorAz.set(`${WALL_ID}-${k}`, az)
+      instances.push(new GeometryInstance({ id: `${WALL_ID}-${k}`, geometry, attributes: { color: ColorGeometryInstanceAttribute.fromColor(this.wallColor(this.sky ? groundBrightness(this.sky.sun) : 1, az)) } }))
+    }
+    if (!instances.length) return
     this.wall = this.host.viewer.scene.primitives.add(
-      new Primitive({
-        geometryInstances: new GeometryInstance({ id: WALL_ID, geometry, attributes: { color: ColorGeometryInstanceAttribute.fromColor(this.wallColor(this.sky ? groundBrightness(this.sky.sun) : 1)) } }),
-        appearance: new PerInstanceColorAppearance({ flat: true, translucent: false, closed: false }),
-        asynchronous: false,
-      }),
+      new Primitive({ geometryInstances: instances, appearance: new PerInstanceColorAppearance({ flat: true, translucent: false, closed: false }), asynchronous: false }),
     )
   }
 
-  private wallColor(f: number): Color {
-    return new Color(WALL_COLOR.red * f, WALL_COLOR.green * f, WALL_COLOR.blue * f, 1)
+  private wallColor(f: number, az: number): Color {
+    const k = f * sectorLight(az, this.sky?.sun.az)
+    return new Color(WALL_COLOR.red * k, WALL_COLOR.green * k, WALL_COLOR.blue * k, 1)
   }
 
   /** La silueta del terreno lejano se oscurece como el suelo cuando el Sol está bajo el horizonte. */
   private tintWall(f: number) {
-    const attrs = this.wall?.getGeometryInstanceAttributes(WALL_ID)
-    if (attrs) attrs.color = ColorGeometryInstanceAttribute.toValue(this.wallColor(f))
+    if (!this.wall) return
+    for (const [id, az] of this.sectorAz) {
+      const attrs = this.wall.getGeometryInstanceAttributes(id)
+      if (attrs) attrs.color = ColorGeometryInstanceAttribute.toValue(this.wallColor(f, az))
+    }
   }
 
   private removeWall() {
     if (this.wall) this.host.viewer.scene.primitives.remove(this.wall)
     this.wall = null
+    this.sectorAz.clear()
   }
 
   /** N, E, S, W sobre el horizonte, para orientarse al mirar a la redonda. */

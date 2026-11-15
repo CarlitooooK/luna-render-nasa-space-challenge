@@ -68,6 +68,9 @@ const DEFAULTS: Required<Omit<LunarGlobeConfig, 'sunDirection' | 'terrainTilesUr
   sunDirection: null,
 }
 
+/** Elevación de la luz ilustrativa del suelo en la vista de horizonte (grados). */
+const ILLUSTRATIVE_LIGHT_ELEVATION_DEG = 35
+
 const STATUS_COLOR: Record<string, string> = {
   GO: '#22c55e',
   CAUTION: '#eab308',
@@ -108,6 +111,9 @@ export class LunarGlobe {
   private flatTerrain = new EllipsoidTerrainProvider({ ellipsoid: MOON })
   private polarLayer: ImageryLayer | null = null
   private hillshadeLayer: ImageryLayer | null = null
+  private serverShading = false // el sombreado viene del backend (v1.5)
+  private shadeLight: { lon: number; lat: number } | null = null
+  private shadeTimer = 0
   private apiBase: string | null = null // URL base de las teselas en uso
   private vehicles!: Vehicles
   private scene!: LandingScene
@@ -188,9 +194,11 @@ export class LunarGlobe {
         this.setGroundBrightness(1)
         this.applyLighting()
         this.refreshCloseCamera()
+        this.refreshHillshadeLight(true) // fuera de la vista de horizonte vuelve la luz por defecto
         this.siteEntities.forEach((e) => (e.show = true))
       },
       setGroundBrightness: (f) => this.setGroundBrightness(f),
+      sunChanged: () => this.refreshHillshadeLight(),
       phase: (phase) => this.emit('horizonPhase', { phase }),
     })
     this.scene = new LandingScene({
@@ -466,11 +474,58 @@ export class LunarGlobe {
       // justo encima del mosaico polar WAC: donde falte una tesela del relieve se ve el mosaico, no un hueco negro
       const above = this.polarLayer ? imageryLayers.indexOf(this.polarLayer) + 1 : 1
       // v1.5: el backend entrega el sombreado hecho (sin costuras, hasta 20 m). v1.3: se calcula aquí desde Terrarium.
-      const provider = version === 'v1.5' ? createServerHillshade(base) : new HillshadeImageryProvider(base)
+      this.serverShading = version === 'v1.5'
+      this.shadeLight = null
+      const provider = this.serverShading ? createServerHillshade(base) : new HillshadeImageryProvider(base)
       this.hillshadeLayer = imageryLayers.addImageryProvider(provider, above)
       this.hillshadeLayer.show = this.config.layers.wac ?? false
     }
     this.viewer.scene.requestRender()
+  }
+
+  /**
+   * En la vista de horizonte el sombreado del polo se ilumina con el Sol real del paso (su punto subsolar, redondeado a
+   * 1° para no pedir teselas nuevas a cada paso del scrubber) y, tras una pausa, se cambia la capa. Fuera de ella vuelve
+   * a la luz por defecto del backend. Solo con sombreado del backend (v1.5): el del cliente usa una luz fija.
+   */
+  private refreshHillshadeLight(immediate = false) {
+    if (!this.serverShading || !this.apiBase || !this.hillshadeLayer) return
+    let want: { lon: number; lat: number } | null = null
+    const az = this.horizon.sunAzimuthDeg
+    const site = this.horizon.siteLatLon
+    if (this.horizon.active && az !== undefined && site) {
+      // Luz con el AZIMUT real del Sol pero a 35° sobre el horizonte: con el Sol real a 1–5° el suelo plano sale casi negro
+      // y no se lee el relieve. El punto de luz está a 55° del sitio, en la dirección del Sol. Iluminación ILUSTRATIVA.
+      const rad = Math.PI / 180
+      const p0 = site.lat * rad, l0 = site.lon * rad, th = az * rad, dl = (90 - ILLUSTRATIVE_LIGHT_ELEVATION_DEG) * rad
+      const p1 = Math.asin(Math.sin(p0) * Math.cos(dl) + Math.cos(p0) * Math.sin(dl) * Math.cos(th))
+      const l1 = l0 + Math.atan2(Math.sin(th) * Math.sin(dl) * Math.cos(p0), Math.cos(dl) - Math.sin(p0) * Math.sin(p1))
+      want = { lat: Math.round(p1 / rad), lon: Math.round((((l1 / rad + 180) % 360) + 360) % 360 - 180) }
+    }
+    const same = (a: typeof want, b: typeof want) => (a === null && b === null) || (!!a && !!b && a.lon === b.lon && a.lat === b.lat)
+    if (same(want, this.shadeLight)) return
+    window.clearTimeout(this.shadeTimer)
+    const apply = () => {
+      if (this.disposed || !this.apiBase || !this.hillshadeLayer) return
+      this.shadeLight = want
+      const { imageryLayers } = this.viewer
+      const old = this.hillshadeLayer
+      const next = imageryLayers.addImageryProvider(createServerHillshade(this.apiBase, want ?? undefined), imageryLayers.indexOf(old) + 1)
+      next.show = old.show
+      this.hillshadeLayer = next
+      // la capa vieja queda debajo hasta que lleguen las teselas nuevas (o 20 s) para que no haya huecos negros
+      let waited = 0
+      const t = window.setInterval(() => {
+        waited += 500
+        if (this.disposed || this.viewer.scene.globe.tilesLoaded || waited >= 20_000) {
+          window.clearInterval(t)
+          if (!this.disposed) imageryLayers.remove(old)
+        }
+      }, 500)
+      this.viewer.scene.requestRender()
+    }
+    if (immediate) apply()
+    else this.shadeTimer = window.setTimeout(apply, 800)
   }
 
   /** Pausa o reanuda el dibujado (el estado, la cámara y los mensajes siguen). */
