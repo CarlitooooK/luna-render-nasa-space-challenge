@@ -1,0 +1,25 @@
+# CI: every PR and every push to main. GitHub check: ci/woodpecker/<pr|push>/ci
+# (handoff repo docs/07 "Despliegues (CI/CD)", D-018).
+when:
+  - event: pull_request
+  - event: push
+    branch: main
+  # deploy.yaml depends on this workflow, so it must also run on manual deploys.
+  - event: deployment
+
+steps:
+  - name: install
+    image: node:22-alpine
+    commands:
+      - npm ci --no-audit --no-fund --loglevel=error
+
+  - name: typecheck
+    image: node:22-alpine
+    commands:
+      - npm run typecheck
+
+  # Copies the Cesium assets, type-checks and bundles, like the server build.
+  - name: build
+    image: node:22-alpine
+    commands:
+      - npm run build

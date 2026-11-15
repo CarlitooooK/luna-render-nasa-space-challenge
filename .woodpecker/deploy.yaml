@@ -1,0 +1,39 @@
+# Publish to the desktop server (handoff repo docs/07 "Despliegues (CI/CD)", D-018).
+# Single environment:
+#   push to main              -> build that commit on the server and publish it
+#   deployment to production  -> publish that pipeline's commit again (rollback)
+when:
+  - event: push
+    branch: main
+  - event: deployment
+    environment: production
+
+# Nothing is published if ci.yaml fails.
+depends_on:
+  - ci
+
+steps:
+  # The key can only run /srv/spaceapps/services/deploy/deploy-frontend.sh for
+  # this app on the host (forced command). It only builds commits already merged
+  # into main, checks the build, swaps releases atomically and keeps the previous one.
+  - name: deploy
+    image: alpine:3.20
+    secrets: [deploy_ssh_key_frontend]
+    commands:
+      - apk add --no-cache --quiet openssh-client
+      - mkdir -p ~/.ssh && chmod 700 ~/.ssh
+      - printf '%s\n' "$${DEPLOY_SSH_KEY_FRONTEND}" > ~/.ssh/id_ed25519 && chmod 600 ~/.ssh/id_ed25519
+      - echo '[172.21.0.1]:2222 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIORleI+T8QufN65wXHtr/PKhFbhGqfYgWqUffjWiBdEo' > ~/.ssh/known_hosts
+      - ssh -p 2222 -o StrictHostKeyChecking=yes -o BatchMode=yes hackaton@172.21.0.1 "${CI_COMMIT_SHA}"
+
+  - name: smoke
+    image: alpine:3.20
+    commands:
+      - apk add --no-cache --quiet curl
+      - BASE=http://spaceapps-frontend:8081
+      - JS=$(curl -fsS --max-time 20 "$${BASE}/" | grep -o "/assets/index-[A-Za-z0-9_-]*\.js" | head -1) && test -n "$${JS}"
+      - curl -fsS --max-time 20 -o /dev/null "$${BASE}$${JS}" && echo "PASS  index and bundle"
+      - curl -fsS --max-time 20 -o /dev/null "$${BASE}/cesium/Workers/createVerticesFromHeightmap.js" && echo "PASS  Cesium workers"
+      - curl -fsS --max-time 20 -o /dev/null "$${BASE}/models/apollo-lunar-module.glb" && echo "PASS  3D models"
+      # Moon Trek through the server cache; a failure only warns (it depends on NASA).
+      - if curl -fsS --max-time 30 -o /dev/null "$${BASE}/trek/tiles/Moon/EQ/LRO_WAC_Mosaic_Global_303ppd_v02/1.0.0/default/default028mm/0/0/0.jpg"; then echo "PASS  Moon Trek cache"; else echo "WARN  Moon Trek cache did not answer"; fi
