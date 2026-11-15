@@ -25,12 +25,14 @@ Host → globo:
 - `SET_SUN_LOCAL {lat,lon,vector}` y `SET_EARTH_LOCAL {lat,lon,vector}`: aceptan `sun_vector_3d` / `earth_vector_3d` tal cual (convención D-008). Dibujan el Sol y la Tierra y encienden la iluminación solar.
 - `SET_PSR` (`psrs` de `GET /psr/nearby`, tal cual): polígonos sobre la superficie. La conversión polar→lat/lon usa el CRS de LOLA (D-012 del handoff).
 - `SET_TRAJECTORY`, `PLAY_ANIMATION`, `FOLLOW_TRAJECTORY {enabled}` (cámara que sigue al módulo).
+- **Vista de horizonte** (ver abajo): `SET_HORIZON {lat,lon,profile}` (el `horizon_profile` de `POST /evaluate`), `SET_SKY_STATE {sun,earth}` (azimut, elevación, `horizonEl` y `visible` del paso del scrubber), `SET_HORIZON_DETAIL {detailed}`, `SHOW_HORIZON {lat,lon,headingDeg?}`, `EXIT_HORIZON`.
+- `SET_DATA_MODE {sample}`: con `true` rotula el visor "Sample data" (el mock: la luz y el horizonte no son reales).
 - `PLAY_LANDING_SCENE {lat,lon,headingDeg?,startAltM?,durationS?,distanceM?,astronaut?}` y `STOP_LANDING_SCENE`: la escena de alunizaje (ver abajo).
 - `SET_VEHICLES {lander?: boolean, astronaut?: {lat,lon,headingDeg?} | null}` y `VIEW_VEHICLE {which: 'lander'|'astronaut', rangeM?}` (fase 3, ver abajo).
 - `LOOK_AT {body: 'sun'|'earth'}`, `VIEW_FROM_SURFACE {lat,lon,look?}` (cámara a 2 m del suelo real) y `SET_VIEW {lat,lon,altM,headingDeg?,pitchDeg?}`.
 - `SET_CONFIG` (rejilla, capas, `terrain`, `terrainExaggeration`, `showStars`, `showSun`, `showEarth`, `autoRotate`…).
 
-Globo → host: `SCENE_ERROR {reason}`, `SCENE_PHASE {phase: 'arrival'|'descent'|'landed'|'done'}`, `SCENE_TELEMETRY {t,altM,vMps}` (ilustrativa), `READY`, `SITE_CLICKED`, `GLOBE_CLICKED`, `ANIMATION_COMPLETE`, `LOADING {pending}` (teselas en descarga; 0 = estable), `TRAJECTORY_PROGRESS {progress,lat,lon,altKm}` (≤10/s, para HUD).
+Globo → host: `HORIZON_PHASE {phase: 'arrival'|'ready'|'leaving'}`, `SCENE_ERROR {reason}`, `SCENE_PHASE {phase: 'arrival'|'descent'|'landed'|'done'}`, `SCENE_TELEMETRY {t,altM,vMps}` (ilustrativa), `READY`, `SITE_CLICKED`, `GLOBE_CLICKED`, `ANIMATION_COMPLETE`, `LOADING {pending}` (teselas en descarga; 0 = estable), `TRAJECTORY_PROGRESS {progress,lat,lon,altKm}` (≤10/s, para HUD).
 
 ### Import directo
 ```ts
@@ -44,6 +46,15 @@ Requiere servir `public/cesium` y definir `CESIUM_BASE_URL` (ver `vite.config.ts
 - **Sin sombreado por relieve:** el terreno de Cesium sin normales no recibe sombras de la luz solar; el relieve se percibe por la geometría, el horizonte y la iluminación horneada de la imagen.
 - **Polo (`polarFix`, por defecto activo):** `src/polar.ts` reproyecta el mosaico polar sur (`LRO_WAC_Mosaic_SPole60_100m_v02`, estereográfico) bajo -83° con mezcla hasta -85°, y recorta la capa LOLA bajo -85°. **Reduce el abanico alrededor del polo a la mitad, no lo elimina** (es un hueco de datos del mosaico), y el mosaico polar tiene otra iluminación que el global, por lo que se notan costuras tenues.
 - Depuración: `?terrain=0` y `?polarfix=0` en la URL de la demo.
+
+## Vista de horizonte (Lander POV)
+Pensada en `docs/ideas/lunar-landing-ui-ux-tdd.md` ("Lander POV", cámara a 2 m del suelo) y `docs/05-flujos.md` §5.2 ("la trayectoria aparente del Sol y la Tierra respecto a la silueta del relieve lunar"). `SHOW_HORIZON` baja la cámara de la esfera al suelo del sitio con un vuelo continuo de ~6 s; `EXIT_HORIZON` vuelve a la esfera, a 2 500 km sobre el sitio.
+- **Silueta:** un muro a 30 km con la altura de `horizon_profile` (elevación aparente, la misma del panel Horizon 360° de la consola). El terreno más cercano lo pinta el relieve del globo. Sol y Tierra pasan por detrás y se ocultan con la silueta, sin cálculo propio.
+- **Sol y Tierra:** posiciones de `SET_SUN_LOCAL` / `SET_EARTH_LOCAL` (vectores del paso). `SET_SKY_STATE` añade las etiquetas: en Simple, solo el nombre (y "behind the terrain" si está oculto); en Detailed, azimut, elevación y holgura sobre el terreno (`el − horizonEl`). Con 'N, E, S, W' sobre el horizonte.
+- **Mirar a la redonda:** arrastrar gira la cámara con el horizonte nivelado; sin zoom ni desplazamiento. Por defecto mira hacia el Sol.
+- **Brillo del suelo y de la silueta:** ILUSTRATIVO, atenuados según la holgura del Sol sobre el terreno (dato real); no usa `power_factor`, que asume un panel que sigue al Sol.
+- Si se envía otra vista (`SELECT_SITE`, `SET_VIEW`, la escena de alunizaje, `RESET`…), la vista de horizonte se cierra.
+- Con datos de muestra (mock) el cielo y el horizonte son sintéticos: el Sol nunca se pone. Rotular con `SET_DATA_MODE`.
 
 ## Escena de alunizaje (fase 3)
 `PLAY_LANDING_SCENE` encadena todo en una sola secuencia, que arranca desde la vista 3D de la Luna:

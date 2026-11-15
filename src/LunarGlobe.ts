@@ -34,6 +34,7 @@ import { createMoonTerrain, groundHeight, groundHeights } from './terrain'
 import { PolarSouthImageryProvider } from './polar'
 import { Vehicles } from './vehicles'
 import { LandingScene, type LandingSceneOptions } from './landingScene'
+import { HorizonView, type HorizonPoint, type HorizonViewOptions, type SkyState } from './horizonView'
 import { RegolithImageryProvider, REGOLITH_MIN_TERRAIN_LEVEL } from './regolith'
 import { LAYER_DEFS, createImageryProvider, type LayerMap } from './layers'
 import type {
@@ -104,6 +105,9 @@ export class LunarGlobe {
   private polarLayer: ImageryLayer | null = null
   private vehicles!: Vehicles
   private scene!: LandingScene
+  private horizon!: HorizonView
+  private dataBadge: HTMLElement | null = null
+  private container: HTMLElement
   private detailLayer: ImageryLayer | null = null
   private lastTelemetry = 0
   private landedHold = 0 // segundos que el módulo se queda posado antes de repetir
@@ -118,6 +122,7 @@ export class LunarGlobe {
   private disposed = false
 
   constructor(container: HTMLElement, config: LunarGlobeConfig = {}) {
+    this.container = container
     this.config = { ...DEFAULTS, ...config, layers: { ...DEFAULTS.layers, ...config.layers } }
 
     this.viewer = new Viewer(container, {
@@ -154,6 +159,29 @@ export class LunarGlobe {
     this.viewer.clock.shouldAnimate = true
     this.sky = new CelestialSky(this.viewer)
     this.vehicles = new Vehicles(this.viewer)
+    this.horizon = new HorizonView({
+      viewer: this.viewer,
+      groundHeight: (lat, lon) => (this.config.terrain ? groundHeight(this.moonTerrain, lat, lon) : Promise.resolve(0)),
+      sunPosition: () => this.sky.position('sun'),
+      earthPosition: () => this.sky.position('earth'),
+      begin: () => {
+        this.scene.stop()
+        this.stopFollow()
+        this.flying = false
+        this.selectedPoint = this.selectedPoint ?? { lat: 0, lon: 0 } // sin auto-rotación
+        this.viewer.camera.cancelFlight()
+        this.viewer.scene.globe.enableLighting = false
+        this.siteEntities.forEach((e) => (e.show = false))
+        this.applyLighting()
+      },
+      end: () => {
+        this.setGroundBrightness(1)
+        this.applyLighting()
+        this.siteEntities.forEach((e) => (e.show = true))
+      },
+      setGroundBrightness: (f) => this.setGroundBrightness(f),
+      phase: (phase) => this.emit('horizonPhase', { phase }),
+    })
     this.scene = new LandingScene({
       viewer: this.viewer,
       vehicles: this.vehicles,
@@ -256,6 +284,7 @@ export class LunarGlobe {
   selectSite(target: { id?: string; lat: number; lon: number }) {
     this.stopFollow()
     this.scene.stop()
+    this.horizon.stop()
     this.selectedId = target.id ?? null
     this.selectedPoint = { lat: target.lat, lon: target.lon }
     this.refreshSites()
@@ -273,6 +302,7 @@ export class LunarGlobe {
   setView(v: { lat: number; lon: number; altM: number; headingDeg?: number; pitchDeg?: number }) {
     this.stopFollow()
     this.scene.stop()
+    this.horizon.stop()
     this.flying = false
     this.selectedPoint = { lat: v.lat, lon: v.lon } // detiene la auto-rotación
     this.viewer.camera.setView({
@@ -355,6 +385,7 @@ export class LunarGlobe {
   async viewFromSurface(lat: number, lon: number, look?: SkyBody) {
     this.stopFollow()
     this.scene.stop()
+    this.horizon.stop()
     const ground = this.config.terrain ? await groundHeight(this.moonTerrain, lat, lon) : 0
     if (this.disposed) return
     const pos = Cartesian3.fromDegrees(lon, lat, ground + 2, MOON)
@@ -366,10 +397,12 @@ export class LunarGlobe {
 
   private orientCamera(position: Cartesian3, direction: Cartesian3) {
     const d = Cartesian3.normalize(direction, new Cartesian3())
-    // "arriba" = eje norte de la Luna proyectado perpendicular a la mirada
-    const k = Cartesian3.dot(Cartesian3.UNIT_Z, d)
-    let up = Cartesian3.subtract(Cartesian3.UNIT_Z, Cartesian3.multiplyByScalar(d, k, new Cartesian3()), new Cartesian3())
-    if (Cartesian3.magnitude(up) < 1e-6) up = Cartesian3.clone(Cartesian3.UNIT_X)
+    // "arriba" = la vertical del lugar (radial) proyectada perpendicular a la mirada. Con el norte de la Luna
+    // como arriba, en el hemisferio sur la cámara quedaba al revés.
+    const radial = Cartesian3.normalize(position, new Cartesian3())
+    const k = Cartesian3.dot(radial, d)
+    let up = Cartesian3.subtract(radial, Cartesian3.multiplyByScalar(d, k, new Cartesian3()), new Cartesian3())
+    if (Cartesian3.magnitude(up) < 1e-6) up = Cartesian3.clone(Cartesian3.UNIT_Z)
     Cartesian3.normalize(up, up)
     this.viewer.camera.setView({ destination: position, orientation: { direction: d, up } })
   }
@@ -422,6 +455,7 @@ export class LunarGlobe {
   /** Cámara que sigue al módulo durante el descenso. */
   setFollowTrajectory(enabled: boolean) {
     this.scene.stop()
+    this.horizon.stop()
     if (enabled && this.trajectoryPoints.length > 1) {
       this.followRange = null
       this.followHeadingDeg = 0
@@ -444,8 +478,58 @@ export class LunarGlobe {
    * Fase 3. `lander`: módulo de aterrizaje que recorre la trayectoria con columna de motor.
    * `astronaut`: astronauta de pie en el suelo de ese punto (null lo quita). Ambos son opcionales.
    */
+  // ─── Vista de horizonte (Lander POV) ───────────────────────────────────
+  /** Perfil de horizonte de `evaluate.horizon_profile` (360 puntos) del sitio. */
+  setHorizonProfile(lat: number, lon: number, profile: HorizonPoint[]) {
+    this.horizon.setProfile(lat, lon, profile)
+  }
+
+  /** Estado del cielo del paso actual del scrubber (azimut, elevación, horizonte y visibilidad). */
+  setSkyState(state: SkyState) {
+    this.horizon.setSky(state)
+  }
+
+  /** Simple muestra solo nombres; Detailed añade azimut, elevación y holgura sobre el terreno. */
+  setHorizonDetailed(detailed: boolean) {
+    this.horizon.setDetailed(detailed)
+  }
+
+  /** Baja de la esfera al suelo del sitio y mira el cielo sobre su horizonte real. */
+  showHorizon(o: HorizonViewOptions) {
+    void this.horizon.show(o)
+  }
+
+  /** Vuelve del horizonte a la esfera con un vuelo continuo. */
+  exitHorizon() {
+    this.horizon.exit()
+  }
+
+  /** Rotula el visor cuando los datos son de muestra (mock): la luz y el horizonte no son reales. */
+  setDataMode(sample: boolean) {
+    if (!sample) {
+      this.dataBadge?.remove()
+      this.dataBadge = null
+      return
+    }
+    if (this.dataBadge) return
+    const el = document.createElement('div')
+    el.textContent = 'Sample data · the light and horizon shown are not real'
+    el.style.cssText = 'position:absolute;top:10px;left:50%;transform:translateX(-50%);z-index:6;padding:4px 12px;border-radius:999px;font:12px system-ui,sans-serif;color:#ffd9a8;background:rgba(42,29,16,.78);border:1px solid rgba(255,198,92,.45);pointer-events:none'
+    this.container.style.position = this.container.style.position || 'relative'
+    this.container.appendChild(el)
+    this.dataBadge = el
+  }
+
+  /** Atenúa o aclara la imagen del suelo (1 = sin cambio). Es un recurso visual, no un modelo de iluminación. */
+  private setGroundBrightness(f: number) {
+    for (const layer of [...Object.values(this.layers), this.polarLayer, this.detailLayer]) {
+      if (layer) layer.brightness = f
+    }
+  }
+
   /** Escena de alunizaje: vuelo desde la vista global, descenso vertical del módulo, polvo y astronauta. */
   playLandingScene(o: LandingSceneOptions) {
+    this.horizon.stop()
     void this.scene.play(o)
   }
 
@@ -466,6 +550,7 @@ export class LunarGlobe {
   /** Acerca la cámara a un vehículo (orbitable con el ratón). Se libera con `reset()` o cualquier otra vista. */
   viewVehicle(which: 'lander' | 'astronaut', rangeM?: number) {
     this.scene.stop()
+    this.horizon.stop()
     if (which === 'lander') {
       // el módulo se mueve: la cámara lo sigue a distancia fija
       if (this.trajectoryPoints.length < 2) return
@@ -489,6 +574,7 @@ export class LunarGlobe {
 
   /** Vuelve a la vista global. */
   reset() {
+    this.horizon.stop()
     this.stopFollow()
     this.scene.stop()
     this.clearSelection()
@@ -583,6 +669,17 @@ export class LunarGlobe {
   private applyLighting() {
     const { scene } = this.viewer
     // En plena escena la luz es la de la escena: el Sol solo reorienta su azimut y el suelo no se sombrea
+    if (this.horizon?.active) {
+      // Luz física del Sol (da la fase de la Tierra); el suelo se atenúa con `setGroundBrightness`, no con la esfera
+      const sunVec = this.config.sunDirection ? new Cartesian3(...this.config.sunDirection) : null
+      this.sky.setSun(sunVec)
+      const travel = sunVec
+        ? Cartesian3.negate(Cartesian3.normalize(sunVec, new Cartesian3()), new Cartesian3())
+        : Cartesian3.clone(this.sky.direction('earth') ?? new Cartesian3(1, 0, 0))
+      scene.light = new DirectionalLight({ direction: Cartesian3.normalize(travel, travel) })
+      scene.globe.enableLighting = false
+      return
+    }
     if (this.scene?.active) {
       this.sky.setSun(this.config.sunDirection ? new Cartesian3(...this.config.sunDirection) : null)
       this.scene.refreshKeyLight()
@@ -741,6 +838,7 @@ export class LunarGlobe {
     }
 
     this.scene.update(dt)
+    this.horizon.update()
     if (this.scene.active) {
       if (now - this.lastTelemetry > 100 && this.scene.phase === 'descent') {
         this.lastTelemetry = now

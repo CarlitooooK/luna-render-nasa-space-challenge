@@ -46,6 +46,7 @@ export interface PsrItem {
 }
 
 export type SkyBody = 'sun' | 'earth'
+export interface SkyBodyPayload { az: number; el: number; horizonEl: number; visible: boolean }
 
 export type ScenePhase = 'arrival' | 'descent' | 'landed' | 'done'
 
@@ -53,6 +54,7 @@ export interface LunarGlobeEvents {
   siteClick: LandingSite
   globeClick: { lat: number; lon: number }
   animationComplete: undefined
+  horizonPhase: { phase: 'arrival' | 'ready' | 'leaving' }
   scenePhase: { phase: ScenePhase }
   sceneError: { reason: string } // las opciones de PLAY_LANDING_SCENE se rechazaron
   sceneTelemetry: { t: number; altM: number; vMps: number } // ilustrativa, no es física
@@ -77,6 +79,16 @@ export type GlobeInboundMessage =
   | { type: 'VIEW_FROM_SURFACE'; payload: { lat: number; lon: number; look?: SkyBody } }
   | { type: 'SET_VIEW'; payload: { lat: number; lon: number; altM: number; headingDeg?: number; pitchDeg?: number } }
   /** Fase 3: módulo con columna de motor siguiendo la trayectoria y/o astronauta en el suelo (`null` lo quita). */
+  /** `horizon_profile` de `POST /evaluate` (360 puntos) del sitio. Hay que enviarlo antes de SHOW_HORIZON. */
+  | { type: 'SET_HORIZON'; payload: { lat: number; lon: number; profile: { az_deg: number; horizon_el_deg: number }[] } }
+  /** Cielo del paso actual del scrubber, tal cual `timeline[stepIndex]` (azimut, elevación, horizonte del terreno, visibilidad). */
+  | { type: 'SET_SKY_STATE'; payload: { sun: SkyBodyPayload; earth: SkyBodyPayload } }
+  | { type: 'SET_HORIZON_DETAIL'; payload: { detailed: boolean } }
+  /** Vista de horizonte (Lander POV): baja de la esfera al suelo del sitio. */
+  | { type: 'SHOW_HORIZON'; payload: { lat: number; lon: number; headingDeg?: number } }
+  | { type: 'EXIT_HORIZON' }
+  /** `sample: true` rotula el visor: la luz y el horizonte mostrados no son reales (mock). */
+  | { type: 'SET_DATA_MODE'; payload: { sample: boolean } }
   /** Escena de alunizaje en un plano horizontal sobre el terreno (vuelo desde la vista global, descenso, polvo y astronauta). */
   | { type: 'PLAY_LANDING_SCENE'; payload: { lat: number; lon: number; headingDeg?: number; startAltM?: number; durationS?: number; distanceM?: number; astronaut?: boolean } }
   | { type: 'STOP_LANDING_SCENE' }
@@ -91,6 +103,7 @@ export type GlobeOutboundMessage =
   | { type: 'SITE_CLICKED'; payload: LandingSite }
   | { type: 'GLOBE_CLICKED'; payload: { lat: number; lon: number } }
   | { type: 'ANIMATION_COMPLETE' }
+  | { type: 'HORIZON_PHASE'; payload: { phase: 'arrival' | 'ready' | 'leaving' } }
   | { type: 'SCENE_ERROR'; payload: { reason: string } }
   | { type: 'SCENE_PHASE'; payload: { phase: ScenePhase } }
   | { type: 'SCENE_TELEMETRY'; payload: { t: number; altM: number; vMps: number } }
