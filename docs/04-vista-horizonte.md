@@ -1,0 +1,9 @@
+# 04. Vista de horizonte (Lander POV)
+
+Pensada en `docs/ideas/lunar-landing-ui-ux-tdd.md` ("Lander POV", cámara a 2 m del suelo) y `docs/05-flujos.md` §5.2 ("la trayectoria aparente del Sol y la Tierra respecto a la silueta del relieve lunar"). `SHOW_HORIZON` baja la cámara de la esfera al suelo del sitio con un vuelo continuo de ~6 s; `EXIT_HORIZON` vuelve a la esfera, a 2 500 km sobre el sitio.
+- **Silueta:** un muro a 30 km con la altura de `horizon_profile` (elevación aparente, la misma del panel Horizon 360° de la consola). El terreno más cercano lo pinta el relieve del globo. Sol y Tierra pasan por detrás y se ocultan con la silueta, sin cálculo propio.
+- **Sol y Tierra:** posiciones de `SET_SUN_LOCAL` / `SET_EARTH_LOCAL` (vectores del paso). `SET_SKY_STATE` añade las etiquetas: en Simple, solo el nombre (y "behind the terrain" si está oculto); en Detailed, azimut, elevación y holgura sobre el terreno (`el − horizonEl`). Con 'N, E, S, W' sobre el horizonte.
+- **Mirar a la redonda:** arrastrar (o dos dedos en el trackpad) gira la cámara; sin zoom ni desplazamiento. Por defecto mira hacia el Sol. El `look` de Cesium 1.147 gira sobre `camera.up` e ignora `constrainedAxis`, así que cada fotograma se recalcula `up` sobre la vertical del sitio: el horizonte no se inclina.
+- **Brillo del suelo y de la silueta:** ILUSTRATIVO, atenuados según la holgura del Sol sobre el terreno (dato real); no usa `power_factor`, que asume un panel que sigue al Sol. Sin Sol queda en penumbra (`NIGHT_FLOOR`, la mitad del brillo diurno), nunca en negro. Entre pasos del timeline cambia con un fundido de 350 ms; al llegar al suelo se aplica de golpe.
+- Si se envía otra vista (`SELECT_SITE`, `SET_VIEW`, la escena de alunizaje, `RESET`…), la vista de horizonte se cierra.
+- Con datos de muestra (mock) el cielo y el horizonte son sintéticos: el Sol nunca se pone. Rotular con `SET_DATA_MODE`.
