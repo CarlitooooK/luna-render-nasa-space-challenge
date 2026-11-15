@@ -68,7 +68,7 @@ const smooth = (a: number, b: number, x: number) => {
  * Brillo mínimo del suelo con el Sol oculto. Sin luz directa el suelo real queda casi negro, pero una pantalla
  * negra no comunica nada: se deja ver la superficie en penumbra y el rótulo del Sol dice que está tras el terreno.
  */
-export const NIGHT_FLOOR = 0.3
+export const NIGHT_FLOOR = 0.5
 // Tiempo con que el brillo del suelo sigue al Sol: el cambio se siente gradual, como la luz del paso siguiente.
 const BRIGHTNESS_TAU_S = 0.35
 
@@ -349,7 +349,9 @@ export class HorizonView {
 
   /** La silueta del terreno lejano se oscurece como el suelo cuando el Sol está bajo el horizonte. */
   private tintWall(f: number) {
-    const attrs = this.wall?.getGeometryInstanceAttributes(WALL_ID)
+    // Recién creada, la silueta todavía no acepta cambios (Cesium lanza DeveloperError): ya nace con el color de `brightness`
+    if (!this.wall?.ready) return
+    const attrs = this.wall.getGeometryInstanceAttributes(WALL_ID)
     if (attrs) attrs.color = ColorGeometryInstanceAttribute.toValue(this.wallColor(f))
   }
 
