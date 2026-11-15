@@ -226,6 +226,7 @@ export class HorizonView {
       this.setBrightness(this.brightness + (this.brightnessTarget - this.brightness) * (1 - Math.exp(-dt / BRIGHTNESS_TAU_S)))
     }
     if (this.phase !== 'ready') return
+    this.level()
     const cc = Cartographic.fromCartesian(this.host.viewer.camera.positionWC, MOON)
     const gh = this.host.viewer.scene.globe.getHeight(cc)
     if (gh !== undefined && cc.height < gh + EYE_HEIGHT_M - 0.01) {
@@ -443,6 +444,21 @@ export class HorizonView {
     // antes que la rosa, y rehacer la rosa las quitaba del visor sin soltarlas (la etiqueta del Sol no volvía)
     for (const e of [this.labels.sun, this.labels.earth]) if (e) this.host.viewer.entities.remove(e)
     this.labels = { sun: null, earth: null }
+  }
+
+  /**
+   * Quita el alabeo: el `look` de Cesium 1.147 en 3D ignora `camera.constrainedAxis` y gira el arrastre horizontal
+   * sobre `camera.up`. Con la cámara mirando hacia arriba, cada arrastre a los lados inclinaba el horizonte (14° tras
+   * cuatro arrastres en las pruebas). Se conserva la dirección y se recalcula `up` sobre la vertical del sitio.
+   */
+  private level() {
+    const cam = this.host.viewer.camera
+    const vertical = Cartesian3.normalize(cam.positionWC, new Cartesian3())
+    if (Math.abs(Cartesian3.dot(cam.right, vertical)) < 1e-4) return
+    if (Math.abs(Cartesian3.dot(cam.direction, vertical)) > 0.999) return // mirando al cenit: sin horizonte que nivelar
+    const up = this.upFor(cam.positionWC, cam.direction)
+    Cartesian3.clone(up, cam.up)
+    Cartesian3.normalize(Cartesian3.cross(cam.direction, up, cam.right), cam.right)
   }
 
   private upFor(pos: Cartesian3, dir: Cartesian3): Cartesian3 {
