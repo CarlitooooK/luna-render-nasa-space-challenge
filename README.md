@@ -20,6 +20,8 @@ npm run build
 ```
 Orígenes permitidos: `VITE_ALLOWED_ORIGINS` (lista separada por comas) o `?allowedOrigins=`. Por defecto `http://localhost:5173`. Los mensajes de otros orígenes se ignoran y nunca se responde a `'*'`.
 
+Teselas de Moon Trek: `VITE_TREK_BASE_URL` cambia la raíz `https://trek.nasa.gov/tiles` por un proxy con caché que replique sus rutas (`<base>/Moon/EQ/...`, `<base>/Moon/SP/...`); puede ser relativa al origen del globo, por ejemplo `/trek`. Sin valor, se usa el servidor de NASA.
+
 Host → globo:
 - `SET_SITES` (`LandingSite[]`, mismos campos que `/sites`; `status` GO/CAUTION/NO-GO colorea el pin), `SELECT_SITE {id?,lat,lon}` (si cambia de sitio, la cámara se aleja, gira la Luna y baja al nuevo: ver "Cámara y gestos"), `RESET`, `RECENTER` (vista de la Luna completa a 9 000 km sobre el sitio elegido, sin quitar la selección; la Luna gira sola hasta la siguiente vista. Cierra la escena y el horizonte).
 - `SET_SUN_LOCAL {lat,lon,vector}` y `SET_EARTH_LOCAL {lat,lon,vector}`: aceptan `sun_vector_3d` / `earth_vector_3d` tal cual (convención D-008). Dibujan el Sol y la Tierra y encienden la iluminación solar.

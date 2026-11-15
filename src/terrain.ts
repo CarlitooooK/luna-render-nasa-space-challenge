@@ -8,6 +8,7 @@ import {
 } from 'cesium'
 import { MOON } from './moon'
 import { API_TILE_MAX_LEVEL, HEIGHTMAP_MAX_LEVEL, HEIGHTMAP_SIZE, fetchHeightmap, fetchTerrarium, type TilesVersion } from './terrarium'
+import { TREK_BASE } from './trek'
 
 // Relieve global desde las teselas DEM de NASA Moon Trek (LOLA, 128 ppd, referido a la esfera de
 // 1 737 400 m, la misma de Ellipsoid.MOON). Las teselas son PNG de 8 bits: el valor (DN) es una
@@ -16,8 +17,7 @@ import { API_TILE_MAX_LEVEL, HEIGHTMAP_MAX_LEVEL, HEIGHTMAP_SIZE, fetchHeightmap
 //   elevación_m ≈ 76.8 · DN − 9049    R² = 0.997, RMSE ≈ 127 m
 // Resolución: nivel 5 = ~666 m/px; con 8 bits la elevación avanza en pasos de ~77 m.
 // Si el backend publica teselas de terreno propias (P-008), basta cambiar `fetchDemTile`.
-const DEM_URL =
-  'https://trek.nasa.gov/tiles/Moon/EQ/LRO_LOLA_DEM_Global_128ppd_v04/1.0.0/default/default028mm'
+const DEM_URL = `${TREK_BASE}/Moon/EQ/LRO_LOLA_DEM_Global_128ppd_v04/1.0.0/default/default028mm`
 const DEM_MAX_LEVEL = 5
 const DN_TO_M = 76.8
 const DN_OFFSET_M = -9049
