@@ -1,5 +1,6 @@
 import './moon' // primero: fija el elipsoide lunar antes de crear nada de Cesium
 import {
+  CameraEventType,
   ArcType,
   BoundingSphere,
   CallbackProperty,
@@ -19,8 +20,10 @@ import {
   LabelStyle,
   Math as CesiumMath,
   Matrix4,
+  type Occluder,
   PolygonHierarchy,
   PolylineGlowMaterialProperty,
+  type Scene,
   ScreenSpaceEventHandler,
   ScreenSpaceEventType,
   Transforms,
@@ -37,6 +40,7 @@ import { detectTilesVersion, normalizeTilesUrl } from './terrarium'
 import { Vehicles } from './vehicles'
 import { LandingScene, type LandingSceneOptions } from './landingScene'
 import { HorizonView, type HorizonPoint, type HorizonViewOptions, type SkyState } from './horizonView'
+import { attachTrackpad } from './trackpad'
 import { RegolithImageryProvider, REGOLITH_MIN_TERRAIN_LEVEL } from './regolith'
 import { LAYER_DEFS, createImageryProvider, type LayerMap } from './layers'
 import type {
@@ -81,6 +85,40 @@ const SELECTED_PIN = '#f59e0b'
 const SITE_VIEW_RANGE_M = 120_000
 const PIN_HEIGHT_M = 200 // evita z-fighting con la superficie
 const AUTO_ROTATE_RAD_PER_S = 0.04
+const GLOBAL_VIEW_ALT_M = 9_000_000
+
+/**
+ * Cesium descarta lo que la Luna tapa con un "occluder": una esfera de radio `minimumRadius + minimumTerrainHeight`.
+ * Ese mínimo sale de las teselas en pantalla; mirando al cielo no hay ninguna y la esfera queda en el radio de
+ * referencia (1 737 400 m). Muchos sitios están por debajo (Apollo 11 a −1,9 km, Chang'e 4 a −5,9 km), así que la
+ * cámara de la vista de horizonte o de la escena queda DENTRO de la esfera, y en ese caso `Occluder` da por oculto
+ * todo: el Sol, la Tierra, sus etiquetas y el módulo desaparecían y solo quedaban las estrellas (verificado con
+ * Cesium 1.147). Con la cámara dentro no hay nada que la esfera pueda tapar, así que se quita, como Cesium ya hace
+ * con la cámara bajo tierra.
+ */
+function dropOccluderWhenInside(scene: Scene) {
+  const s = scene as unknown as { updateFrameState: () => void; frameState: { occluder?: Occluder } }
+  const update = s.updateFrameState.bind(scene)
+  s.updateFrameState = () => {
+    update()
+    const occluder = s.frameState.occluder
+    if (occluder && Cartesian3.magnitude(scene.camera.positionWC) <= occluder.radius) s.frameState.occluder = undefined
+  }
+}
+
+/**
+ * Vuelo de un sitio a otro: primero se aleja, la Luna gira bajo la cámara y luego baja al sitio nuevo. La altura
+ * máxima crece con el arco entre los dos puntos (≈ 1,2 × la distancia sobre la superficie), entre 400 km y la
+ * vista global. Desde lejos (la cámara ya está más alta que eso) no hay arco: Cesium baja directo.
+ */
+export function siteHopArc(from: Cartesian3, to: Cartesian3): { maximumHeightM: number | undefined; durationS: number } {
+  const angle = Cartesian3.angleBetween(from, to)
+  const R = MOON.maximumRadius
+  const camHeight = Cartesian3.magnitude(from) - R
+  const peak = Math.max(400_000, Math.min(GLOBAL_VIEW_ALT_M * 0.7, angle * R * 1.2))
+  if (camHeight >= peak * 0.8) return { maximumHeightM: undefined, durationS: 2.5 }
+  return { maximumHeightM: peak, durationS: Math.max(2.5, Math.min(4.5, 2.2 + angle * 1.6)) }
+}
 
 type Listener<K extends keyof LunarGlobeEvents> = (data: LunarGlobeEvents[K]) => void
 
@@ -105,7 +143,12 @@ export class LunarGlobe {
   private handler: ScreenSpaceEventHandler
   private listeners: { [K in keyof LunarGlobeEvents]?: Listener<K>[] } = {}
   private userInteracting = false
+  /** Último gesto del trackpad: el giro automático espera un momento tras él. */
+  private lastGesture = 0
+  private detachTrackpad: () => void = () => {}
   private flying = false
+  /** Tras RECENTER: gira aunque haya un sitio elegido. Lo apaga cualquier vista nueva. */
+  private orbit = false
   private sky!: CelestialSky
   private moonTerrain = createMoonTerrain()
   private flatTerrain = new EllipsoidTerrainProvider({ ellipsoid: MOON })
@@ -155,6 +198,7 @@ export class LunarGlobe {
       scene3DOnly: true,
       skyAtmosphere: false,
       skyBox: createSkyBox(),
+      showRenderLoopErrors: false, // sin el panel de error de Cesium: recoverFromRenderError() reanuda el render
       globe: new Globe(MOON),
     })
 
@@ -169,10 +213,13 @@ export class LunarGlobe {
     scene.backgroundColor = Color.fromCssColorString('#05070d')
     // El Sol está a 9e8 m en el modelo: hay que ampliar el plano lejano de la cámara
     ;(scene.camera.frustum as { far: number }).far = FAR_PLANE_M
+    dropOccluderWhenInside(scene)
     if (scene.skyBox) scene.skyBox.show = this.config.showStars
     // Las partículas (columna de motor) avanzan con el reloj de Cesium: debe correr
     this.viewer.clock.shouldAnimate = true
     this.sky = new CelestialSky(this.viewer)
+    // La luz acompaña al Sol mientras se desliza: si saltara con cada paso, el terminador avanzaría a brincos
+    this.sky.onMove(() => this.followSunLight())
     this.vehicles = new Vehicles(this.viewer)
     this.horizon = new HorizonView({
       viewer: this.viewer,
@@ -180,6 +227,7 @@ export class LunarGlobe {
       sunPosition: () => this.sky.position('sun'),
       earthPosition: () => this.sky.position('earth'),
       begin: () => {
+        this.orbit = false
         this.scene.stop()
         this.stopFollow()
         this.flying = false
@@ -207,6 +255,7 @@ export class LunarGlobe {
       groundHeight: (lat, lon) => (this.config.terrain ? groundHeight(this.moonTerrain, lat, lon) : Promise.resolve(0)),
       sunDirection: () => this.sky.direction('sun'),
       begin: () => {
+        this.orbit = false
         this.stopFollow()
         this.flying = false
         this.selectedPoint = this.selectedPoint ?? { lat: 0, lon: 0 } // sin auto-rotación
@@ -242,6 +291,14 @@ export class LunarGlobe {
     const ctrl = scene.screenSpaceCameraController
     ctrl.minimumZoomDistance = 1_000
     ctrl.maximumZoomDistance = 25_000_000
+    // La rueda la atiende trackpad.ts (zoom estable); Cesium conserva el zoom con botón derecho y con pellizco táctil
+    ctrl.zoomEventTypes = [CameraEventType.RIGHT_DRAG, CameraEventType.PINCH]
+    // Red de seguridad: si una excepción detiene el bucle de render de Cesium, se recupera la vista global en vez de
+    // quedar congelado. No basta `scene.renderError`: los errores del controlador de cámara y de `preRender` llegan
+    // directo al bucle del widget, que lo apaga sin emitir ese evento.
+    this.watchdog = window.setInterval(() => {
+      if (!this.disposed && !this.paused && !this.viewer.useDefaultRenderLoop) this.recoverRenderLoop()
+    }, 1000)
 
     this.viewer.camera.setView({
       destination: Cartesian3.fromDegrees(0, -20, 9_000_000, MOON),
@@ -261,6 +318,14 @@ export class LunarGlobe {
     this.handler.setInputAction(up, ScreenSpaceEventType.LEFT_UP)
     this.handler.setInputAction(down, ScreenSpaceEventType.RIGHT_DOWN)
     this.handler.setInputAction(up, ScreenSpaceEventType.RIGHT_UP)
+    // Trackpad: pellizco = zoom, dos dedos = mover (en la vista de horizonte, mirar a la redonda)
+    this.detachTrackpad = attachTrackpad(container, {
+      viewer: this.viewer,
+      lookMode: () => this.horizon.active && this.horizon.phase === 'ready',
+      locked: () => this.scene.active || this.camLocked || this.follow || this.flying || (this.horizon.active && this.horizon.phase !== 'ready'),
+      touched: () => (this.lastGesture = performance.now()),
+      heightLimits: () => ({ min: ctrl.minimumZoomDistance, max: ctrl.maximumZoomDistance }),
+    })
 
     scene.preRender.addEventListener(this.onPreRender)
     this.emit('ready', undefined)
@@ -303,6 +368,7 @@ export class LunarGlobe {
 
   /** Vuela hasta el sitio (por id o por coordenadas) y lo resalta. */
   selectSite(target: { id?: string; lat: number; lon: number }) {
+    this.orbit = false
     this.stopFollow()
     this.scene.stop()
     this.horizon.stop()
@@ -311,9 +377,11 @@ export class LunarGlobe {
     this.refreshSites()
     this.flying = true
     const center = Cartesian3.fromDegrees(target.lon, target.lat, 0, MOON)
+    const arc = siteHopArc(this.viewer.camera.positionWC, center)
     this.viewer.camera.flyToBoundingSphere(new BoundingSphere(center, 1), {
       offset: new HeadingPitchRange(0, CesiumMath.toRadians(-90), SITE_VIEW_RANGE_M),
-      duration: 2.5,
+      duration: arc.durationS,
+      maximumHeight: arc.maximumHeightM,
       complete: () => (this.flying = false),
       cancel: () => (this.flying = false),
     })
@@ -321,6 +389,7 @@ export class LunarGlobe {
 
   /** Coloca la cámara de golpe sobre (lat, lon) a `altM` metros sobre la esfera; pitch -90 = mirando abajo. */
   setView(v: { lat: number; lon: number; altM: number; headingDeg?: number; pitchDeg?: number }) {
+    this.orbit = false
     this.stopFollow()
     this.scene.stop()
     this.horizon.stop()
@@ -531,6 +600,7 @@ export class LunarGlobe {
   /** Pausa o reanuda el dibujado (el estado, la cámara y los mensajes siguen). */
   setPaused(paused: boolean) {
     if (this.disposed) return
+    this.paused = paused
     this.viewer.useDefaultRenderLoop = !paused
   }
 
@@ -742,6 +812,7 @@ export class LunarGlobe {
 
   /** Acerca la cámara a un vehículo (orbitable con el ratón). Se libera con `reset()` o cualquier otra vista. */
   viewVehicle(which: 'lander' | 'astronaut', rangeM?: number) {
+    this.orbit = false
     this.scene.stop()
     this.horizon.stop()
     if (which === 'lander') {
@@ -765,8 +836,52 @@ export class LunarGlobe {
     this.viewer.camera.lookAt(target, new HeadingPitchRange(CesiumMath.toRadians(200), CesiumMath.toRadians(-12), rangeM ?? 7))
   }
 
+  /**
+   * Vuelve a la vista global **sin perder la selección**: el pin sigue resaltado y la cámara queda sobre él, a la
+   * distancia de la vista inicial. Cierra el horizonte y la escena, y retoma el giro automático (que sin esto solo
+   * corre sin sitio elegido) hasta la próxima vista.
+   */
+  recenter() {
+    this.horizon.stop()
+    this.scene.stop()
+    this.stopFollow()
+    this.camLocked = false
+    const p = this.selectedPoint
+    this.flying = true
+    this.viewer.camera.flyTo({
+      destination: Cartesian3.fromDegrees(p?.lon ?? 0, p ? Math.max(-60, Math.min(60, p.lat)) : -20, GLOBAL_VIEW_ALT_M, MOON),
+      duration: 1.8,
+      complete: () => { this.flying = false; this.orbit = true },
+      cancel: () => (this.flying = false),
+    })
+  }
+
+  private paused = false
+  private watchdog = 0
+  private renderErrors = 0
+  /**
+   * El bucle de render se detuvo por una excepción: la cámara vuelve a la vista global (con orientación nueva, por
+   * si la anterior quedó en NaN) y se reanuda. Hasta 5 veces por sesión, para no ocultar un error que se repite.
+   */
+  private recoverRenderLoop() {
+    if (++this.renderErrors > 5) return
+    console.warn('[lunar-globe] el render se detuvo por un error; se recupera la vista global')
+    const cam = this.viewer.camera
+    cam.cancelFlight()
+    cam.lookAtTransform(Matrix4.IDENTITY)
+    this.stopFollow()
+    this.camLocked = false
+    const p = this.selectedPoint
+    cam.setView({
+      destination: Cartesian3.fromDegrees(p?.lon ?? 0, p ? Math.max(-60, Math.min(60, p.lat)) : -20, GLOBAL_VIEW_ALT_M, MOON),
+      orientation: { heading: 0, pitch: CesiumMath.toRadians(-90), roll: 0 },
+    })
+    this.viewer.useDefaultRenderLoop = true
+  }
+
   /** Vuelve a la vista global. */
   reset() {
+    this.orbit = false
     this.horizon.stop()
     this.stopFollow()
     this.scene.stop()
@@ -786,6 +901,8 @@ export class LunarGlobe {
   dispose() {
     if (this.disposed) return
     this.disposed = true
+    window.clearInterval(this.watchdog)
+    this.detachTrackpad()
     this.viewer.scene.preRender.removeEventListener(this.onPreRender)
     this.handler.destroy()
     this.viewer.destroy()
@@ -882,8 +999,9 @@ export class LunarGlobe {
       // Luz física del Sol (da la fase de la Tierra); el suelo se atenúa con `setGroundBrightness`, no con la esfera
       const sunVec = this.config.sunDirection ? new Cartesian3(...this.config.sunDirection) : null
       this.sky.setSun(sunVec)
-      const travel = sunVec
-        ? Cartesian3.negate(Cartesian3.normalize(sunVec, new Cartesian3()), new Cartesian3())
+      const shown = this.sky.shownDirection('sun')
+      const travel = shown
+        ? Cartesian3.negate(shown, new Cartesian3())
         : Cartesian3.clone(this.sky.direction('earth') ?? new Cartesian3(1, 0, 0))
       this.setSceneLight(Cartesian3.normalize(travel, travel))
       scene.globe.enableLighting = false
@@ -901,12 +1019,20 @@ export class LunarGlobe {
     // DirectionalLight.direction es hacia donde viaja la luz: opuesto al vector hacia el Sol.
     // Sin Sol conocido, se ilumina la Tierra como "llena" (Sol detrás del observador) y la Luna
     // queda sin sombreado.
-    const travel = sunVec
-      ? Cartesian3.negate(sunVec, new Cartesian3())
+    const shown = sunVec ? this.sky.shownDirection('sun') : null
+    const travel = shown
+      ? Cartesian3.negate(shown, new Cartesian3())
       : Cartesian3.clone(this.sky.direction('earth') ?? new Cartesian3(1, 0, 0))
     Cartesian3.normalize(travel, travel)
     this.setSceneLight(travel)
     scene.globe.enableLighting = !!sunVec
+  }
+
+  /** La luz viaja en sentido contrario al Sol dibujado. La escena de alunizaje usa su propia luz clave. */
+  private followSunLight() {
+    if (this.scene?.active || !this.sceneLight || this.viewer.scene.light !== this.sceneLight) return
+    const sun = this.sky.shownDirection('sun')
+    if (sun) Cartesian3.negate(sun, this.sceneLight.direction)
   }
 
   private pinColor(site: LandingSite): Color {
@@ -1078,7 +1204,7 @@ export class LunarGlobe {
       }
     }
 
-    const idle = !this.selectedId && !this.selectedPoint && !this.userInteracting
+    const idle = (this.orbit || (!this.selectedId && !this.selectedPoint)) && !this.userInteracting && now - this.lastGesture > 1500
     if (this.config.autoRotate && idle && !this.flying) {
       this.viewer.camera.rotate(Cartesian3.UNIT_Z, -AUTO_ROTATE_RAD_PER_S * dt)
     }
