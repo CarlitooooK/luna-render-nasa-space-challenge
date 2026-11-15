@@ -8,6 +8,42 @@ export const API_TILE_MAX_LEVEL = 9
 const cache = new Map<string, Promise<Float32Array | null>>()
 const CACHE_LIMIT = 192
 
+// Cesium no limita las peticiones de un proveedor que sobrescribe `requestImage`: al acercarse al polo salían
+// cientos de teselas a la vez contra un túnel de Cloudflare, algunas fallaban y, como el fallo se guardaba en la
+// caché, el hueco (una franja negra) quedaba para siempre. Ahora hay un máximo de peticiones en vuelo,
+// reintentos con espera y los fallos no se cachean.
+const MAX_IN_FLIGHT = 6
+const RETRIES = 3
+let inFlight = 0
+const waiting: (() => void)[] = []
+const slot = async () => {
+  if (inFlight >= MAX_IN_FLIGHT) await new Promise<void>((r) => waiting.push(r))
+  inFlight++
+}
+const release = () => {
+  inFlight--
+  waiting.shift()?.()
+}
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
+
+/** Descarga con reintentos. 404 y 422 son definitivos (fuera de rango o sin datos): no se reintentan. */
+async function download(url: string): Promise<Blob | null> {
+  for (let attempt = 0; attempt <= RETRIES; attempt++) {
+    await slot()
+    try {
+      const res = await fetch(url)
+      if (res.ok) return await res.blob()
+      if (res.status === 404 || res.status === 422) return null
+    } catch {
+      /* red caída o túnel saturado: se reintenta */
+    } finally {
+      release()
+    }
+    await sleep(300 * 2 ** attempt)
+  }
+  return null
+}
+
 /** Una URL base válida (http o https), sin barra final; `null` si no lo es. */
 export function normalizeApiBase(url: unknown): string | null {
   if (typeof url !== 'string') return null
@@ -30,10 +66,13 @@ export function fetchTerrarium(base: string, z: number, row: number, col: number
   if (hit) return hit
   const p = (async () => {
     try {
-      const res = await fetch(`${base}/terrain/tiles/${z}/${row}/${col}.png`)
-      if (!res.ok) return null
+      const blob = await download(`${base}/terrain/tiles/${z}/${row}/${col}.png`)
+      if (!blob) {
+        cache.delete(key) // un fallo no se recuerda: la próxima petición vuelve a intentarlo
+        return null
+      }
       // 'none': sin gestión de color, para leer los bytes exactos del PNG
-      const bmp = await createImageBitmap(await res.blob(), { colorSpaceConversion: 'none' })
+      const bmp = await createImageBitmap(blob, { colorSpaceConversion: 'none' })
       const cv = new OffscreenCanvas(API_TILE_SIZE, API_TILE_SIZE)
       const ctx = cv.getContext('2d', { willReadFrequently: true })!
       ctx.drawImage(bmp, 0, 0, API_TILE_SIZE, API_TILE_SIZE)
@@ -42,6 +81,7 @@ export function fetchTerrarium(base: string, z: number, row: number, col: number
       for (let i = 0; i < out.length; i++) out[i] = terrariumMeters(px[i * 4], px[i * 4 + 1], px[i * 4 + 2])
       return out
     } catch {
+      cache.delete(key)
       return null
     }
   })()

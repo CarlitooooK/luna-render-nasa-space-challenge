@@ -461,9 +461,10 @@ export class LunarGlobe {
     const { imageryLayers } = this.viewer
     if (this.hillshadeLayer) imageryLayers.remove(this.hillshadeLayer)
     if (this.config.polarFix) {
-      this.hillshadeLayer = imageryLayers.addImageryProvider(new HillshadeImageryProvider(base), 1)
+      // justo encima del mosaico polar WAC: donde falte una tesela del relieve se ve el mosaico, no un hueco negro
+      const above = this.polarLayer ? imageryLayers.indexOf(this.polarLayer) + 1 : 1
+      this.hillshadeLayer = imageryLayers.addImageryProvider(new HillshadeImageryProvider(base), above)
       this.hillshadeLayer.show = this.config.layers.wac ?? false
-      if (this.polarLayer) this.polarLayer.show = false
     }
     this.viewer.scene.requestRender()
   }
@@ -753,7 +754,7 @@ export class LunarGlobe {
           }
         }
       }
-      if (id === 'wac' && this.polarLayer) this.polarLayer.show = wanted && !this.hillshadeLayer
+      if (id === 'wac' && this.polarLayer) this.polarLayer.show = wanted
       if (id === 'wac' && this.hillshadeLayer) this.hillshadeLayer.show = wanted
       if (id === 'wac' && this.detailLayer) this.detailLayer.show = wanted
       if (layer) {
