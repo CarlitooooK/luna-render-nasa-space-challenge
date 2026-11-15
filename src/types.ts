@@ -109,6 +109,8 @@ export type GlobeInboundMessage =
   | { type: 'VIEW_VEHICLE'; payload: { which: 'lander' | 'astronaut'; rangeM?: number } }
   | { type: 'FOLLOW_TRAJECTORY'; payload: { enabled: boolean } }
   | { type: 'PLAY_ANIMATION'; payload: { playing: boolean } }
+  /** Vista global sin perder la selección; la cámara vuelve a girar sola hasta que se elija otra vista. */
+  | { type: 'RECENTER' }
   | { type: 'RESET' }
 
 export type GlobeOutboundMessage =

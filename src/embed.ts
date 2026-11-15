@@ -117,6 +117,9 @@ export function connectToHost(globe: LunarGlobe, allowedOrigins: string[]): () =
       case 'PLAY_ANIMATION':
         globe.setPlaying(msg.payload.playing)
         break
+      case 'RECENTER':
+        globe.recenter()
+        break
       case 'RESET':
         globe.reset()
         break

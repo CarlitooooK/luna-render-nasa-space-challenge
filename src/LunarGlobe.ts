@@ -78,6 +78,7 @@ const SELECTED_PIN = '#f59e0b'
 const SITE_VIEW_RANGE_M = 120_000
 const PIN_HEIGHT_M = 200 // evita z-fighting con la superficie
 const AUTO_ROTATE_RAD_PER_S = 0.04
+const GLOBAL_VIEW_ALT_M = 9_000_000
 
 type Listener<K extends keyof LunarGlobeEvents> = (data: LunarGlobeEvents[K]) => void
 
@@ -103,6 +104,8 @@ export class LunarGlobe {
   private listeners: { [K in keyof LunarGlobeEvents]?: Listener<K>[] } = {}
   private userInteracting = false
   private flying = false
+  /** Tras RECENTER: gira aunque haya un sitio elegido. Lo apaga cualquier vista nueva. */
+  private orbit = false
   private sky!: CelestialSky
   private moonTerrain = createMoonTerrain()
   private flatTerrain = new EllipsoidTerrainProvider({ ellipsoid: MOON })
@@ -176,6 +179,7 @@ export class LunarGlobe {
       sunPosition: () => this.sky.position('sun'),
       earthPosition: () => this.sky.position('earth'),
       begin: () => {
+        this.orbit = false
         this.scene.stop()
         this.stopFollow()
         this.flying = false
@@ -201,6 +205,7 @@ export class LunarGlobe {
       groundHeight: (lat, lon) => (this.config.terrain ? groundHeight(this.moonTerrain, lat, lon) : Promise.resolve(0)),
       sunDirection: () => this.sky.direction('sun'),
       begin: () => {
+        this.orbit = false
         this.stopFollow()
         this.flying = false
         this.selectedPoint = this.selectedPoint ?? { lat: 0, lon: 0 } // sin auto-rotación
@@ -297,6 +302,7 @@ export class LunarGlobe {
 
   /** Vuela hasta el sitio (por id o por coordenadas) y lo resalta. */
   selectSite(target: { id?: string; lat: number; lon: number }) {
+    this.orbit = false
     this.stopFollow()
     this.scene.stop()
     this.horizon.stop()
@@ -315,6 +321,7 @@ export class LunarGlobe {
 
   /** Coloca la cámara de golpe sobre (lat, lon) a `altM` metros sobre la esfera; pitch -90 = mirando abajo. */
   setView(v: { lat: number; lon: number; altM: number; headingDeg?: number; pitchDeg?: number }) {
+    this.orbit = false
     this.stopFollow()
     this.scene.stop()
     this.horizon.stop()
@@ -689,6 +696,7 @@ export class LunarGlobe {
 
   /** Acerca la cámara a un vehículo (orbitable con el ratón). Se libera con `reset()` o cualquier otra vista. */
   viewVehicle(which: 'lander' | 'astronaut', rangeM?: number) {
+    this.orbit = false
     this.scene.stop()
     this.horizon.stop()
     if (which === 'lander') {
@@ -712,8 +720,29 @@ export class LunarGlobe {
     this.viewer.camera.lookAt(target, new HeadingPitchRange(CesiumMath.toRadians(200), CesiumMath.toRadians(-12), rangeM ?? 7))
   }
 
+  /**
+   * Vuelve a la vista global **sin perder la selección**: el pin sigue resaltado y la cámara queda sobre él, a la
+   * distancia de la vista inicial. Cierra el horizonte y la escena, y retoma el giro automático (que sin esto solo
+   * corre sin sitio elegido) hasta la próxima vista.
+   */
+  recenter() {
+    this.horizon.stop()
+    this.scene.stop()
+    this.stopFollow()
+    this.camLocked = false
+    const p = this.selectedPoint
+    this.flying = true
+    this.viewer.camera.flyTo({
+      destination: Cartesian3.fromDegrees(p?.lon ?? 0, p ? Math.max(-60, Math.min(60, p.lat)) : -20, GLOBAL_VIEW_ALT_M, MOON),
+      duration: 1.8,
+      complete: () => { this.flying = false; this.orbit = true },
+      cancel: () => (this.flying = false),
+    })
+  }
+
   /** Vuelve a la vista global. */
   reset() {
+    this.orbit = false
     this.horizon.stop()
     this.stopFollow()
     this.scene.stop()
@@ -1034,7 +1063,7 @@ export class LunarGlobe {
       }
     }
 
-    const idle = !this.selectedId && !this.selectedPoint && !this.userInteracting
+    const idle = (this.orbit || (!this.selectedId && !this.selectedPoint)) && !this.userInteracting
     if (this.config.autoRotate && idle && !this.flying) {
       this.viewer.camera.rotate(Cartesian3.UNIT_Z, -AUTO_ROTATE_RAD_PER_S * dt)
     }
