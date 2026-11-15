@@ -1,7 +1,7 @@
 import { Credit, GeographicTilingScheme, Rectangle, UrlTemplateImageryProvider } from 'cesium'
 import { MOON, MOON_RADIUS_M } from './moon'
 import { POLAR_FADE_END_DEG, POLAR_FADE_START_DEG } from './polar'
-import { API_TILE_MAX_LEVEL, API_TILE_SIZE, fetchTerrarium } from './terrarium'
+import { API_TILE_MAX_LEVEL, API_TILE_SIZE, HILLSHADE_MAX_LEVEL, fetchTerrarium } from './terrarium'
 
 // Relieve sombreado del polo sur a partir del DEM del backend (LOLA, 40 m/px en el polo). Reemplaza al mosaico
 // polar WAC de Moon Trek, cuyo máximo es 267 m/px (nivel 5): de cerca se ve en bloques y con el abanico de
@@ -67,4 +67,21 @@ export class HillshadeImageryProvider extends UrlTemplateImageryProvider {
     out.getContext('2d')!.putImageData(img, 0, 0)
     return out
   }
+}
+
+/**
+ * Sombreado hecho por el backend (v1.5, `hillshade/{z}/{row}/{col}.png`, hasta 20 m): sin costuras entre teselas y sin
+ * cálculo en el navegador. Luz y exageración: las del globo (luz fija del backend por defecto). Se funde con el mosaico
+ * entre −83° y −85°. Cesium limita y reintenta estas peticiones por sí mismo.
+ */
+export function createServerHillshade(base: string) {
+  return new UrlTemplateImageryProvider({
+    url: `${base}/hillshade/{z}/{y}/{x}.png?exaggeration=${EXAGGERATION}&fade_start_lat=${POLAR_FADE_START_DEG}&fade_end_lat=${POLAR_FADE_END_DEG}`,
+    tilingScheme: new GeographicTilingScheme({ ellipsoid: MOON }),
+    rectangle: Rectangle.fromDegrees(-180, -90, 180, POLAR_FADE_START_DEG),
+    maximumLevel: HILLSHADE_MAX_LEVEL,
+    tileWidth: S,
+    tileHeight: S,
+    credit: new Credit('Relief shading (illustrative lighting) from LRO LOLA DEM via Lunar Navigator API'),
+  })
 }

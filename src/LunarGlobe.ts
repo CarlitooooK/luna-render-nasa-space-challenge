@@ -32,8 +32,8 @@ import { CelestialSky, FAR_PLANE_M, createSkyBox } from './sky'
 import { polarSouthToLatLon } from './geo'
 import { createMoonTerrain, groundHeight, groundHeights } from './terrain'
 import { PolarSouthImageryProvider } from './polar'
-import { HillshadeImageryProvider } from './hillshade'
-import { fetchTerrarium, normalizeTilesUrl } from './terrarium'
+import { HillshadeImageryProvider, createServerHillshade } from './hillshade'
+import { detectTilesVersion, normalizeTilesUrl } from './terrarium'
 import { Vehicles } from './vehicles'
 import { LandingScene, type LandingSceneOptions } from './landingScene'
 import { HorizonView, type HorizonPoint, type HorizonViewOptions, type SkyState } from './horizonView'
@@ -455,16 +455,19 @@ export class LunarGlobe {
     const base = normalizeTilesUrl(url)
     if (!base || base === this.apiBase || this.disposed) return
     // Un backend sin `/terrain/tiles` (anterior a v1.3) o caído: se sigue con Moon Trek, sin romper nada
-    if (!(await fetchTerrarium(base, 0, 0, 0)) || this.disposed) return
+    const version = await detectTilesVersion(base)
+    if (!version || this.disposed) return
     this.apiBase = base
-    this.moonTerrain = createMoonTerrain(base)
+    this.moonTerrain = createMoonTerrain(base, version)
     if (this.config.terrain) this.viewer.terrainProvider = this.moonTerrain
     const { imageryLayers } = this.viewer
     if (this.hillshadeLayer) imageryLayers.remove(this.hillshadeLayer)
     if (this.config.polarFix) {
       // justo encima del mosaico polar WAC: donde falte una tesela del relieve se ve el mosaico, no un hueco negro
       const above = this.polarLayer ? imageryLayers.indexOf(this.polarLayer) + 1 : 1
-      this.hillshadeLayer = imageryLayers.addImageryProvider(new HillshadeImageryProvider(base), above)
+      // v1.5: el backend entrega el sombreado hecho (sin costuras, hasta 20 m). v1.3: se calcula aquí desde Terrarium.
+      const provider = version === 'v1.5' ? createServerHillshade(base) : new HillshadeImageryProvider(base)
+      this.hillshadeLayer = imageryLayers.addImageryProvider(provider, above)
       this.hillshadeLayer.show = this.config.layers.wac ?? false
     }
     this.viewer.scene.requestRender()
@@ -569,7 +572,7 @@ export class LunarGlobe {
             polygon: {
               // sin `height`: Cesium lo dibuja pegado al terreno
               hierarchy: new PolygonHierarchy(outer, holes.map((h) => new PolygonHierarchy(h))),
-              material: Color.fromCssColorString('#3b82f6').withAlpha(0.2),
+              material: Color.fromCssColorString('#3b82f6').withAlpha(0.14),
             },
           }),
           // Contorno fino: el relleno solo no deja ver el terreno ni dónde termina la sombra permanente

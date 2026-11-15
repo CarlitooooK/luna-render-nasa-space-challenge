@@ -7,7 +7,7 @@ import {
   type TerrainProvider,
 } from 'cesium'
 import { MOON } from './moon'
-import { API_TILE_MAX_LEVEL, fetchTerrarium } from './terrarium'
+import { API_TILE_MAX_LEVEL, HEIGHTMAP_MAX_LEVEL, HEIGHTMAP_SIZE, fetchHeightmap, fetchTerrarium, type TilesVersion } from './terrarium'
 
 // Relieve global desde las teselas DEM de NASA Moon Trek (LOLA, 128 ppd, referido a la esfera de
 // 1 737 400 m, la misma de Ellipsoid.MOON). Las teselas son PNG de 8 bits: el valor (DN) es una
@@ -85,7 +85,8 @@ function sample(t: Float32Array, px: number, py: number): number {
 }
 
 /** Terreno global de la Luna. Niveles >5 se interpolan desde el nivel 5 (no hay más detalle gratuito). */
-export function createMoonTerrain(apiBase?: string): TerrainProvider {
+export function createMoonTerrain(apiBase?: string, version: TilesVersion = 'v1.3'): TerrainProvider {
+  if (apiBase && version === 'v1.5') return createMeshTerrain(apiBase)
   // Con la URL del backend, el relieve sale de sus teselas Terrarium (LOLA, 40 m/px en el polo, niveles 0 a 9) en
   // metros reales: sin la calibración de 8 bits ni el suavizado. Sin ella, queda el DEM de Moon Trek.
   const fetchTile = apiBase ? (lv: number, row: number, col: number) => fetchTerrarium(apiBase, lv, row, col) : fetchDemTile
@@ -138,4 +139,49 @@ export async function groundHeights(provider: TerrainProvider, pts: { lat: numbe
   } catch {
     return pts.map(() => 0)
   }
+}
+
+/** Interpola bilinealmente una malla 65 × 65 con las muestras sobre los bordes, en coordenadas continuas 0..64. */
+function sampleMesh(m: Float32Array, fx: number, fy: number): number {
+  const N = HEIGHTMAP_SIZE
+  const x = Math.min(N - 1, Math.max(0, fx))
+  const y = Math.min(N - 1, Math.max(0, fy))
+  const x0 = Math.floor(x), y0 = Math.floor(y)
+  const x1 = Math.min(N - 1, x0 + 1), y1 = Math.min(N - 1, y0 + 1)
+  const tx = x - x0, ty = y - y0
+  const top = m[y0 * N + x0] * (1 - tx) + m[y0 * N + x1] * tx
+  const bot = m[y1 * N + x0] * (1 - tx) + m[y1 * N + x1] * tx
+  return top * (1 - ty) + bot * ty
+}
+
+/**
+ * Terreno con la malla v1.5 del backend (`heightmap/*.bin`, niveles 0 a 12, ~21 m en el polo): el arreglo va a Cesium
+ * tal cual, sin decodificar PNG ni remuestrear; las teselas vecinas comparten el borde, así que no hay grietas.
+ * Más allá del nivel 12 interpola la malla del ancestro.
+ */
+function createMeshTerrain(base: string): TerrainProvider {
+  const N = HEIGHTMAP_SIZE
+  return new CustomHeightmapTerrainProvider({
+    width: N,
+    height: N,
+    tilingScheme: new GeographicTilingScheme({ ellipsoid: MOON }),
+    credit: new Credit('NASA/GSFC/MIT — LRO LOLA DEM (via Lunar Navigator API)'),
+    callback: async (x: number, y: number, level: number) => {
+      const lv = Math.min(level, HEIGHTMAP_MAX_LEVEL)
+      const shift = level - lv
+      const mesh = await fetchHeightmap(base, lv, y >> shift, x >> shift)
+      if (!mesh) return new Float32Array(N * N) // sin red: terreno plano en esa tesela
+      if (shift === 0) return new Float32Array(mesh) // copia: Cesium se queda con el arreglo
+      const span = 2 ** shift
+      const out = new Float32Array(N * N)
+      for (let j = 0; j < N; j++) {
+        const v = ((y + j / (N - 1)) / span - (y >> shift)) * (N - 1)
+        for (let i = 0; i < N; i++) {
+          const u = ((x + i / (N - 1)) / span - (x >> shift)) * (N - 1)
+          out[j * N + i] = sampleMesh(mesh, u, v)
+        }
+      }
+      return out
+    },
+  })
 }
