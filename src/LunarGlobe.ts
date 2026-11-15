@@ -167,6 +167,8 @@ export class LunarGlobe {
     // Las partículas (columna de motor) avanzan con el reloj de Cesium: debe correr
     this.viewer.clock.shouldAnimate = true
     this.sky = new CelestialSky(this.viewer)
+    // La luz acompaña al Sol mientras se desliza: si saltara con cada paso, el terminador avanzaría a brincos
+    this.sky.onMove(() => this.followSunLight())
     this.vehicles = new Vehicles(this.viewer)
     this.horizon = new HorizonView({
       viewer: this.viewer,
@@ -827,8 +829,9 @@ export class LunarGlobe {
       // Luz física del Sol (da la fase de la Tierra); el suelo se atenúa con `setGroundBrightness`, no con la esfera
       const sunVec = this.config.sunDirection ? new Cartesian3(...this.config.sunDirection) : null
       this.sky.setSun(sunVec)
-      const travel = sunVec
-        ? Cartesian3.negate(Cartesian3.normalize(sunVec, new Cartesian3()), new Cartesian3())
+      const shown = this.sky.shownDirection('sun')
+      const travel = shown
+        ? Cartesian3.negate(shown, new Cartesian3())
         : Cartesian3.clone(this.sky.direction('earth') ?? new Cartesian3(1, 0, 0))
       this.setSceneLight(Cartesian3.normalize(travel, travel))
       scene.globe.enableLighting = false
@@ -846,12 +849,20 @@ export class LunarGlobe {
     // DirectionalLight.direction es hacia donde viaja la luz: opuesto al vector hacia el Sol.
     // Sin Sol conocido, se ilumina la Tierra como "llena" (Sol detrás del observador) y la Luna
     // queda sin sombreado.
-    const travel = sunVec
-      ? Cartesian3.negate(sunVec, new Cartesian3())
+    const shown = sunVec ? this.sky.shownDirection('sun') : null
+    const travel = shown
+      ? Cartesian3.negate(shown, new Cartesian3())
       : Cartesian3.clone(this.sky.direction('earth') ?? new Cartesian3(1, 0, 0))
     Cartesian3.normalize(travel, travel)
     this.setSceneLight(travel)
     scene.globe.enableLighting = !!sunVec
+  }
+
+  /** La luz viaja en sentido contrario al Sol dibujado. La escena de alunizaje usa su propia luz clave. */
+  private followSunLight() {
+    if (this.scene?.active || !this.sceneLight || this.viewer.scene.light !== this.sceneLight) return
+    const sun = this.sky.shownDirection('sun')
+    if (sun) Cartesian3.negate(sun, this.sceneLight.direction)
   }
 
   private pinColor(site: LandingSite): Color {
