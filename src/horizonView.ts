@@ -1,5 +1,6 @@
 import {
   CameraEventType,
+  CallbackPositionProperty,
   Cartesian2,
   Cartesian3,
   Cartographic,
@@ -68,15 +69,24 @@ const smooth = (a: number, b: number, x: number) => {
 }
 
 /**
- * Brillo ILUSTRATIVO del suelo según el Sol: oscuro cuando el Sol queda bajo el horizonte real, y más claro
- * cuanto más sobre él. La holgura (elevación − horizonte del terreno) sí es dato del backend; la curva no.
- * No usa `power_factor`, que asume un panel que sigue al Sol.
+ * Brillo mínimo del suelo con el Sol oculto. Sin luz directa el suelo real queda casi negro, pero una pantalla
+ * negra no comunica nada: se deja ver la superficie en penumbra y el rótulo del Sol dice que está tras el terreno.
+ */
+export const NIGHT_FLOOR = 0.5
+// Tiempo con que el brillo del suelo sigue al Sol: el cambio se siente gradual, como la luz del paso siguiente.
+const BRIGHTNESS_TAU_S = 0.35
+
+/**
+ * Brillo ILUSTRATIVO del suelo según el Sol: en penumbra (`NIGHT_FLOOR`) cuando el Sol queda bajo el horizonte
+ * real, y más claro cuanto más sobre él. La holgura (elevación − horizonte del terreno) y la elevación sí son datos
+ * del backend; la curva no. No usa `power_factor`, que asume un panel que sigue al Sol.
  */
 export function groundBrightness(sun: SkyBodyState | undefined): number {
   if (!sun) return 1
   const clearance = sun.el - sun.horizonEl
   const k = smooth(-0.7, 0.7, clearance)
-  return 0.12 + 0.55 * k + 0.33 * k * Math.min(1, Math.max(0, sun.el) / 15)
+  const day = 0.62 * k + 0.38 * k * Math.min(1, Math.max(0, sun.el) / 15)
+  return NIGHT_FLOOR + (1 - NIGHT_FLOOR) * day
 }
 
 /**
@@ -107,7 +117,8 @@ export class HorizonView {
   private detailed = false
   private wall: Primitive | null = null
   private sectorAz = new Map<string, number>()
-  private entities: Entity[] = []
+  /** Rosa de los vientos (N, E, S, O). Aparte de las etiquetas: rehacer la rosa no debe borrar las del Sol y la Tierra. */
+  private compass: Entity[] = []
   private labels: { sun: Entity | null; earth: Entity | null } = { sun: null, earth: null }
   private token = 0
   private site0 = Cartesian3.ZERO
@@ -116,6 +127,10 @@ export class HorizonView {
   private north = Cartesian3.UNIT_Y
   private camPos = Cartesian3.ZERO
   private saved: Record<string, unknown> | null = null
+  /** Brillo aplicado y el que pide el paso actual; `update()` lleva uno hacia el otro. */
+  private brightness = 1
+  private brightnessTarget = 1
+  private lastFrame = 0
 
   constructor(private host: HorizonHost) {}
 
@@ -145,9 +160,7 @@ export class HorizonView {
   setSky(state: SkyState) {
     this.sky = state
     if (!this.active) return
-    const f = groundBrightness(state.sun)
-    this.host.setGroundBrightness(f)
-    this.tintWall(f)
+    this.brightnessTarget = groundBrightness(state.sun)
     this.refreshLabels()
     this.host.sunChanged?.()
   }
@@ -182,7 +195,8 @@ export class HorizonView {
     this.buildWall()
     this.buildCompass()
     this.refreshLabels()
-    if (this.sky) this.host.setGroundBrightness(groundBrightness(this.sky.sun))
+    // Al llegar se aplica de golpe: la luz del primer paso, sin fundido desde el día
+    this.setBrightness(this.sky ? groundBrightness(this.sky.sun) : 1, true)
 
     // La esfera se queda atrás: vuelo continuo desde la vista actual hasta el suelo
     this.host.viewer.camera.flyTo({
@@ -202,6 +216,7 @@ export class HorizonView {
     this.setPhase('leaving')
     const c = Cartographic.fromCartesian(this.site0, MOON)
     this.releaseControls()
+    this.brightness = this.brightnessTarget = 1
     this.host.setGroundBrightness(1)
     this.clearOverlays()
     this.host.viewer.camera.flyTo({
@@ -222,6 +237,7 @@ export class HorizonView {
     if (!this.active) return
     this.token++
     this.releaseControls()
+    this.brightness = this.brightnessTarget = 1
     this.host.setGroundBrightness(1)
     this.clearOverlays()
     this.active = false
@@ -229,16 +245,23 @@ export class HorizonView {
     if (restoreHost) this.host.end()
   }
 
-  /** Una vez por fotograma: mantiene la cámara sobre el terreno dibujado. */
+  /** Una vez por fotograma: lleva el brillo del suelo hacia el del paso actual y mantiene la cámara sobre el terreno. */
   update() {
-    if (!this.active || this.phase !== 'ready') return
+    const now = performance.now()
+    const dt = this.lastFrame ? Math.min((now - this.lastFrame) / 1000, 0.1) : 0
+    this.lastFrame = now
+    if (!this.active) return
+    if (Math.abs(this.brightness - this.brightnessTarget) > 1e-3) {
+      this.setBrightness(this.brightness + (this.brightnessTarget - this.brightness) * (1 - Math.exp(-dt / BRIGHTNESS_TAU_S)))
+    }
+    if (this.phase !== 'ready') return
+    this.level()
     const cc = Cartographic.fromCartesian(this.host.viewer.camera.positionWC, MOON)
     const gh = this.host.viewer.scene.globe.getHeight(cc)
     if (gh !== undefined && cc.height < gh + EYE_HEIGHT_M - 0.01) {
       cc.height = gh + EYE_HEIGHT_M
       this.host.viewer.camera.position = Cartographic.toCartesian(cc, MOON)
     }
-    this.positionLabels()
   }
 
   // ─── Internos ───────────────────────────────────────────────────────────
@@ -345,12 +368,20 @@ export class HorizonView {
       if (!geometry) continue
       const az = (pts[from].az_deg + pts[to].az_deg) / 2
       this.sectorAz.set(`${WALL_ID}-${k}`, az)
-      instances.push(new GeometryInstance({ id: `${WALL_ID}-${k}`, geometry, attributes: { color: ColorGeometryInstanceAttribute.fromColor(this.wallColor(this.sky ? groundBrightness(this.sky.sun) : 1, az)) } }))
+      instances.push(new GeometryInstance({ id: `${WALL_ID}-${k}`, geometry, attributes: { color: ColorGeometryInstanceAttribute.fromColor(this.wallColor(this.brightness, az)) } }))
     }
     if (!instances.length) return
     this.wall = this.host.viewer.scene.primitives.add(
       new Primitive({ geometryInstances: instances, appearance: new PerInstanceColorAppearance({ flat: true, translucent: false, closed: false }), asynchronous: false }),
     )
+  }
+
+  /** Suelo y silueta con el mismo brillo. `immediate` también fija el objetivo (sin fundido). */
+  private setBrightness(f: number, immediate = false) {
+    this.brightness = f
+    if (immediate) this.brightnessTarget = f
+    this.host.setGroundBrightness(f)
+    this.tintWall(f)
   }
 
   private wallColor(f: number, az: number): Color {
@@ -360,7 +391,8 @@ export class HorizonView {
 
   /** La silueta del terreno lejano se oscurece como el suelo cuando el Sol está bajo el horizonte. */
   private tintWall(f: number) {
-    if (!this.wall) return
+    // Recién creada, la silueta todavía no acepta cambios (Cesium lanza DeveloperError): ya nace con el color de `brightness`
+    if (!this.wall?.ready) return
     for (const [id, az] of this.sectorAz) {
       const attrs = this.wall.getGeometryInstanceAttributes(id)
       if (attrs) attrs.color = ColorGeometryInstanceAttribute.toValue(this.wallColor(f, az))
@@ -378,7 +410,7 @@ export class HorizonView {
     const { entities } = this.host.viewer
     this.clearCompass()
     for (const [name, az] of [['N', 0], ['E', 90], ['S', 180], ['W', 270]] as const) {
-      this.entities.push(
+      this.compass.push(
         entities.add({
           position: new ConstantPositionProperty(this.skyPoint(az, 0.4)),
           label: {
@@ -398,8 +430,8 @@ export class HorizonView {
   }
 
   private clearCompass() {
-    this.entities.forEach((e) => this.host.viewer.entities.remove(e))
-    this.entities = []
+    this.compass.forEach((e) => this.host.viewer.entities.remove(e))
+    this.compass = []
   }
 
   private labelText(name: string, b: SkyBodyState): string {
@@ -418,8 +450,13 @@ export class HorizonView {
       let e = this.labels[key]
       const text = this.labelText(name, b)
       if (!e) {
+        // La etiqueta lee la posición dibujada del astro en cada fotograma (sin crear una propiedad nueva cada vez)
+        const at = key === 'sun' ? () => this.host.sunPosition() : () => this.host.earthPosition()
         e = entities.add({
-          position: new ConstantPositionProperty(Cartesian3.ZERO),
+          position: new CallbackPositionProperty((_t, result) => {
+            const p = at()
+            return p ? Cartesian3.clone(p, result ?? new Cartesian3()) : undefined
+          }, false),
           label: {
             text,
             font: '12px system-ui, sans-serif',
@@ -435,27 +472,36 @@ export class HorizonView {
           },
         })
         this.labels[key] = e
-        this.entities.push(e)
       } else if (e.label) {
         e.label.text = new ConstantProperty(text)
       }
     }
     make('sun', 'Sun', '#ffc65c', this.sky.sun)
     make('earth', 'Earth', '#5bbdff', this.sky.earth)
-    this.positionLabels()
-  }
-
-  private positionLabels() {
-    const sun = this.host.sunPosition()
-    const earth = this.host.earthPosition()
-    if (this.labels.sun && sun) this.labels.sun.position = new ConstantPositionProperty(sun)
-    if (this.labels.earth && earth) this.labels.earth.position = new ConstantPositionProperty(earth)
   }
 
   private clearOverlays() {
     this.removeWall()
     this.clearCompass()
+    // Las etiquetas viven aparte de la rosa: si el cielo llega mientras show() espera la altura del suelo, se crean
+    // antes que la rosa, y rehacer la rosa las quitaba del visor sin soltarlas (la etiqueta del Sol no volvía)
+    for (const e of [this.labels.sun, this.labels.earth]) if (e) this.host.viewer.entities.remove(e)
     this.labels = { sun: null, earth: null }
+  }
+
+  /**
+   * Quita el alabeo: el `look` de Cesium 1.147 en 3D ignora `camera.constrainedAxis` y gira el arrastre horizontal
+   * sobre `camera.up`. Con la cámara mirando hacia arriba, cada arrastre a los lados inclinaba el horizonte (14° tras
+   * cuatro arrastres en las pruebas). Se conserva la dirección y se recalcula `up` sobre la vertical del sitio.
+   */
+  private level() {
+    const cam = this.host.viewer.camera
+    const vertical = Cartesian3.normalize(cam.positionWC, new Cartesian3())
+    if (Math.abs(Cartesian3.dot(cam.right, vertical)) < 1e-4) return
+    if (Math.abs(Cartesian3.dot(cam.direction, vertical)) > 0.999) return // mirando al cenit: sin horizonte que nivelar
+    const up = this.upFor(cam.positionWC, cam.direction)
+    Cartesian3.clone(up, cam.up)
+    Cartesian3.normalize(Cartesian3.cross(cam.direction, up, cam.right), cam.right)
   }
 
   private upFor(pos: Cartesian3, dir: Cartesian3): Cartesian3 {
